@@ -15,6 +15,7 @@ path = "src/main.rs"
 garcalc-cas = { workspace = true }
 garcalc-ipc = { workspace = true }
 garcalc-graph = { workspace = true }
+garcalc-math = { workspace = true }
 
 # UI toolkit
 gartk-core = { workspace = true }
