@@ -1,0 +1,18 @@
+[package]
+name = "garcas"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Standalone CAS CLI for garcalc"
+
+[[bin]]
+name = "garcas"
+path = "src/main.rs"
+
+[dependencies]
+garcalc-cas = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
