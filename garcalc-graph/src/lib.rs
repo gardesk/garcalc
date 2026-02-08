@@ -2,11 +2,11 @@
 //!
 //! Provides function plotting, parametric curves, implicit curves,
 //! and 3D surface visualization.
-//!
-//! This is a stub for Sprint 3-4 implementation.
 
 pub mod plot2d;
 pub mod plot3d;
+
+pub use plot2d::{Graph2D, PlotConfig, CURVE_COLORS};
 
 use garcalc_cas::Expr;
 use serde::{Deserialize, Serialize};

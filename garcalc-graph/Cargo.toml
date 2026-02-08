@@ -10,3 +10,4 @@ description = "2D/3D graphing engine for garcalc"
 garcalc-cas = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+cairo-rs = { workspace = true }
