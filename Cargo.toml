@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "garcalc",
+    "garcalcctl",
+    "garcalc-ipc",
+    "garcalc-cas",
+    "garcas",
+    "garcalc-graph",
+    "garcalc-geometry",
+    "garcalc-doc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["mfwolffe"]
+license = "MIT"
+repository = "https://github.com/mfwolffe/gardesk"
+
+[workspace.dependencies]
+# UI toolkit
+gartk-core = { path = "../gartk/gartk-core" }
+gartk-x11 = { path = "../gartk/gartk-x11" }
+gartk-render = { path = "../gartk/gartk-render" }
+
+# X11
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+# System
+libc = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# File system
+dirs = "6.0"
+
+# Configuration
+toml = "0.8"
+mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
+
+# Async runtime (for IPC)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net", "signal", "time"] }
+
+# Cairo (for UI)
+cairo-rs = { version = "0.20", features = ["xcb"] }
+
+# Internal crates
+garcalc-ipc = { path = "garcalc-ipc" }
+garcalc-cas = { path = "garcalc-cas" }
+garcalc-graph = { path = "garcalc-graph" }
+garcalc-geometry = { path = "garcalc-geometry" }
+garcalc-doc = { path = "garcalc-doc" }

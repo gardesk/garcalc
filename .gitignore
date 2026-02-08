@@ -1,0 +1,7 @@
+/target
+Cargo.lock
+docs/
+CLAUDE.md
+.fackr/
+.vscode/
+.claude/
