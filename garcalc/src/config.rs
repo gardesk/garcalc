@@ -1,6 +1,11 @@
 //! Configuration loading
+//!
+//! Supports:
+//! - Lua configuration via ~/.config/gar/init.lua (gar.calculator table)
+//! - TOML fallback via ~/.config/garcalc/config.toml
 
 use anyhow::Result;
+use mlua::Lua;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -100,9 +105,16 @@ impl Default for AppearanceConfig {
 }
 
 impl Config {
-    /// Load configuration from file
+    /// Load configuration
+    /// Tries Lua config first (~/.config/gar/init.lua), then falls back to TOML
     pub fn load() -> Result<Self> {
-        let path = config_path();
+        // Try Lua config first (shared with other gar components)
+        if let Ok(config) = Self::load_from_lua() {
+            return Ok(config);
+        }
+
+        // Fall back to TOML config
+        let path = toml_config_path();
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
             let config: Config = toml::from_str(&content)?;
@@ -112,9 +124,110 @@ impl Config {
         }
     }
 
-    /// Save configuration to file
+    /// Load configuration from Lua (~/.config/gar/init.lua)
+    fn load_from_lua() -> Result<Self> {
+        let lua_path = lua_config_path();
+        if !lua_path.exists() {
+            return Err(anyhow::anyhow!("Lua config not found"));
+        }
+
+        let lua = Lua::new();
+        let content = std::fs::read_to_string(&lua_path)?;
+
+        // Create gar table if it doesn't exist
+        lua.scope(|_scope| {
+            let globals = lua.globals();
+
+            // Initialize gar table
+            let gar: mlua::Table = lua.create_table()?;
+            globals.set("gar", gar)?;
+
+            // Execute the config file
+            lua.load(&content).exec()?;
+
+            // Get gar.calculator table
+            let gar: mlua::Table = globals.get("gar")?;
+            let calc: Option<mlua::Table> = gar.get("calculator").ok();
+
+            if let Some(calc) = calc {
+                let config = Self::from_lua_table(&calc)?;
+                Ok(config)
+            } else {
+                Err(mlua::Error::RuntimeError("gar.calculator not found".to_string()))
+            }
+        }).map_err(|e| anyhow::anyhow!("Lua error: {}", e))
+    }
+
+    /// Parse Config from Lua table
+    fn from_lua_table(table: &mlua::Table) -> mlua::Result<Self> {
+        let mut config = Config::default();
+
+        // General settings
+        if let Ok(general) = table.get::<mlua::Table>("general") {
+            if let Ok(mode) = general.get::<String>("default_mode") {
+                config.general.default_mode = mode;
+            }
+            if let Ok(precision) = general.get::<u32>("precision") {
+                config.general.precision = precision;
+            }
+            if let Ok(angle) = general.get::<String>("angle_mode") {
+                config.general.angle_mode = angle;
+            }
+            if let Ok(exact) = general.get::<bool>("exact_mode") {
+                config.general.exact_mode = exact;
+            }
+        }
+
+        // Popup settings
+        if let Ok(popup) = table.get::<mlua::Table>("popup") {
+            if let Ok(w) = popup.get::<u32>("width") {
+                config.popup.width = w;
+            }
+            if let Ok(h) = popup.get::<u32>("height") {
+                config.popup.height = h;
+            }
+            if let Ok(pos) = popup.get::<String>("position") {
+                config.popup.position = pos;
+            }
+        }
+
+        // Graph settings
+        if let Ok(graph) = table.get::<mlua::Table>("graph") {
+            if let Ok(x_range) = graph.get::<mlua::Table>("x_range") {
+                if let (Ok(min), Ok(max)) = (x_range.get::<f64>(1), x_range.get::<f64>(2)) {
+                    config.graph.default_x_range = (min, max);
+                }
+            }
+            if let Ok(y_range) = graph.get::<mlua::Table>("y_range") {
+                if let (Ok(min), Ok(max)) = (y_range.get::<f64>(1), y_range.get::<f64>(2)) {
+                    config.graph.default_y_range = (min, max);
+                }
+            }
+            if let Ok(grid) = graph.get::<bool>("grid") {
+                config.graph.grid_enabled = grid;
+            }
+        }
+
+        // Appearance settings
+        if let Ok(appearance) = table.get::<mlua::Table>("appearance") {
+            if let Ok(font) = appearance.get::<String>("font_family") {
+                config.appearance.font_family = font;
+            }
+            if let Ok(size) = appearance.get::<u32>("font_size") {
+                config.appearance.font_size = size;
+            }
+            if let Ok(panel) = appearance.get::<bool>("button_panel") {
+                config.appearance.button_panel_visible = panel;
+            }
+        }
+
+        Ok(config)
+    }
+
+    /// Save configuration to TOML file
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
+        let path = toml_config_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -124,7 +237,14 @@ impl Config {
     }
 }
 
-fn config_path() -> PathBuf {
+fn lua_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("gar")
+        .join("init.lua")
+}
+
+fn toml_config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("garcalc")

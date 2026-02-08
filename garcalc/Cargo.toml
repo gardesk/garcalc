@@ -45,6 +45,7 @@ serde_json = { workspace = true }
 # Configuration
 toml = { workspace = true }
 dirs = { workspace = true }
+mlua = { workspace = true }
 
 # Async (for IPC server)
 tokio = { workspace = true }
