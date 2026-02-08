@@ -14,6 +14,7 @@ path = "src/main.rs"
 # Internal crates
 garcalc-cas = { workspace = true }
 garcalc-ipc = { workspace = true }
+garcalc-graph = { workspace = true }
 
 # UI toolkit
 gartk-core = { workspace = true }

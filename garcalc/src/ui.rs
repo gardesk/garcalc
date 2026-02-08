@@ -1,6 +1,7 @@
 //! UI rendering using gartk-render
 
 use anyhow::Result;
+use garcalc_graph::Graph2D;
 use garcalc_ipc::Mode;
 use gartk_core::{Color, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -40,33 +41,126 @@ impl CalculatorUI {
         &self.window
     }
 
+    pub fn size(&self) -> (u32, u32) {
+        let s = self.renderer.size();
+        (s.width, s.height)
+    }
+
     pub fn render(
         &mut self,
         input: &str,
         cursor: usize,
         history: &[HistoryEntry],
         mode: Mode,
+        graph: &Graph2D,
     ) -> Result<()> {
         let size = self.renderer.size();
 
-        // Clear background with darker color
-        self.renderer.clear_color(self.theme.background.darken(0.1))?;
+        if mode == Mode::Graph {
+            // Graph mode: render graph with overlay input
+            self.render_graph_mode(input, cursor, history, graph)?;
+        } else {
+            // Calculator mode: standard layout
+            // Clear background with darker color
+            self.renderer.clear_color(self.theme.background.darken(0.1))?;
 
-        // Mode indicator
-        self.draw_mode_indicator(mode)?;
+            // Mode indicator
+            self.draw_mode_indicator(mode)?;
 
-        // History area
-        let history_start_y = 40;
-        let input_height = 50;
-        let history_end_y = size.height as i32 - input_height - 20;
-        self.draw_history(history, history_start_y, history_end_y)?;
+            // History area
+            let history_start_y = 40;
+            let input_height = 50;
+            let history_end_y = size.height as i32 - input_height - 20;
+            self.draw_history(history, history_start_y, history_end_y)?;
 
-        // Input area
-        let input_y = size.height as i32 - input_height - 10;
-        self.draw_input(input, cursor, input_y)?;
+            // Input area
+            let input_y = size.height as i32 - input_height - 10;
+            self.draw_input(input, cursor, input_y)?;
+        }
 
         // Copy to window
         self.copy_to_window()?;
+
+        Ok(())
+    }
+
+    fn render_graph_mode(
+        &mut self,
+        input: &str,
+        cursor: usize,
+        history: &[HistoryEntry],
+        graph: &Graph2D,
+    ) -> Result<()> {
+        let size = self.renderer.size();
+        let width = size.width;
+        let height = size.height;
+
+        // Get Cairo context from renderer surface
+        let ctx = self.renderer.surface().context()?;
+
+        // Render the graph (fills entire area)
+        graph.render(&ctx, width, height);
+
+        // Mode indicator (overlay)
+        self.draw_mode_indicator(Mode::Graph)?;
+
+        // Input area at bottom (overlay with semi-transparent background)
+        let input_height = 50;
+        let input_y = height as i32 - input_height - 10;
+
+        // Semi-transparent background for input area
+        let input_bg = Rect::new(10, input_y - 5, width - 20, input_height as u32 + 10);
+        self.renderer.fill_rounded_rect(
+            input_bg,
+            8.0,
+            self.theme.background.with_alpha(0.85),
+        )?;
+
+        // Draw input
+        self.draw_input(input, cursor, input_y)?;
+
+        // Show most recent history entry as overlay (if any)
+        if let Some(entry) = history.last() {
+            let result_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(12.0)
+                .color(self.theme.foreground.with_alpha(0.8));
+
+            let text = if let Some(ref error) = entry.error {
+                format!("Error: {error}")
+            } else {
+                entry.result.clone()
+            };
+
+            // Background for result
+            let result_bg = Rect::new(10, input_y - 30, width - 20, 22);
+            self.renderer.fill_rounded_rect(
+                result_bg,
+                4.0,
+                self.theme.background.with_alpha(0.75),
+            )?;
+
+            self.renderer.text(&text, 20.0, (input_y - 26) as f64, &result_style)?;
+        }
+
+        // Show function count
+        let func_count = graph.functions.len();
+        if func_count > 0 {
+            let func_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(11.0)
+                .color(self.theme.foreground.with_alpha(0.7));
+
+            let func_text = format!("{} function{}", func_count, if func_count == 1 { "" } else { "s" });
+            self.renderer.text(&func_text, (width - 80) as f64, 12.0, &func_style)?;
+        }
+
+        // Help text
+        let help_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.5));
+        self.renderer.text("Scroll: zoom | Drag: pan | Right-click: trace | Ctrl+R: reset", 90.0, 12.0, &help_style)?;
 
         Ok(())
     }
