@@ -173,6 +173,10 @@ impl App {
                         ev.request_redraw();
                     }
                 }
+                InputEvent::Resize { width, height } => {
+                    let _ = self.ui.resize(width, height);
+                    ev.request_redraw();
+                }
                 InputEvent::Expose => {
                     ev.request_redraw();
                 }

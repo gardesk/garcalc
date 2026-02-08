@@ -46,6 +46,14 @@ impl CalculatorUI {
         (s.width, s.height)
     }
 
+    /// Resize the renderer to match new window dimensions
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if width > 0 && height > 0 {
+            self.renderer = Renderer::with_theme(width, height, self.theme.clone())?;
+        }
+        Ok(())
+    }
+
     pub fn render(
         &mut self,
         input: &str,
