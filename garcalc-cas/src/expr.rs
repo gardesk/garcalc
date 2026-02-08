@@ -36,7 +36,14 @@ pub struct Rational {
 
 impl Rational {
     pub fn new(num: i64, den: i64) -> Self {
+        // Handle division by zero - keep as-is for limit detection
+        if den == 0 {
+            return Self { num, den: 0 };
+        }
         let g = gcd(num.abs(), den.abs());
+        if g == 0 {
+            return Self { num: 0, den: 1 };
+        }
         let sign = if den < 0 { -1 } else { 1 };
         Self {
             num: sign * num / g,

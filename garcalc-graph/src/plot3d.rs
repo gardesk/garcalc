@@ -203,6 +203,26 @@ impl Graph3D {
         });
     }
 
+    /// Add a parametric surface (x(u,v), y(u,v), z(u,v))
+    pub fn add_parametric(
+        &mut self,
+        x_expr: Expr,
+        y_expr: Expr,
+        z_expr: Expr,
+        u_range: (f64, f64),
+        v_range: (f64, f64),
+    ) {
+        self.surfaces.push(Surface3D::Parametric {
+            x_expr,
+            y_expr,
+            z_expr,
+            u_var: "u".to_string(),
+            v_var: "v".to_string(),
+            u_range,
+            v_range,
+        });
+    }
+
     /// Clear all surfaces
     pub fn clear_surfaces(&mut self) {
         self.surfaces.clear();

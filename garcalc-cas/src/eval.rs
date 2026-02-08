@@ -7,7 +7,7 @@ use std::f64::consts::{E, PI};
 
 use crate::error::{CasError, Result};
 use crate::expr::{Expr, Rational, Sign};
-use crate::symbolic::{Differentiator, Integrator, Simplifier, Solver};
+use crate::symbolic::{Differentiator, Integrator, Limits, Simplifier, Solver};
 
 /// Variable bindings for evaluation
 pub type Environment = HashMap<String, Expr>;
@@ -130,6 +130,7 @@ impl Evaluator {
                 // Symbolic functions operate on unevaluated expressions
                 match name.as_str() {
                     "diff" | "derivative" | "integrate" | "integral" |
+                    "limit" | "lim" |
                     "solve" | "simplify" | "expand" | "factor" |
                     "substitute" | "subs" => {
                         self.call_function(name, args)
@@ -187,14 +188,19 @@ impl Evaluator {
                 }
             }
 
-            Expr::Limit { .. }
-            | Expr::Sum { .. }
+            Expr::Limit { expr: inner, var, point, direction } => {
+                let result = Limits::limit(inner, var, point, *direction)?;
+                let simplified = Simplifier::simplify(&result);
+                self.eval(&simplified)
+            }
+
+            Expr::Sum { .. }
             | Expr::Product { .. } => {
                 if self.exact_mode {
                     Ok(expr.clone())
                 } else {
                     Err(CasError::NotImplemented(
-                        "limits/sums/products not yet implemented".to_string(),
+                        "sums/products not yet implemented".to_string(),
                     ))
                 }
             }
@@ -553,6 +559,89 @@ impl Evaluator {
                 }
             }
 
+            ("limit", 3, _) | ("lim", 3, _) => {
+                // limit(expr, var, point)
+                if let Expr::Symbol(var) = &args[1] {
+                    let result = Limits::limit(&args[0], var, &args[2], None)?;
+                    self.eval(&Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("limit requires variable as second argument".to_string()))
+                }
+            }
+            ("limit", 4, _) | ("lim", 4, _) => {
+                // limit(expr, var, point, direction) where direction is "left", "right", "-", "+"
+                if let Expr::Symbol(var) = &args[1] {
+                    let direction = match &args[3] {
+                        Expr::Symbol(s) if s.as_str() == "left" || s.as_str() == "-" => {
+                            Some(crate::expr::LimitDirection::Left)
+                        }
+                        Expr::Symbol(s) if s.as_str() == "right" || s.as_str() == "+" => {
+                            Some(crate::expr::LimitDirection::Right)
+                        }
+                        _ => None,
+                    };
+                    let result = Limits::limit(&args[0], var, &args[2], direction)?;
+                    self.eval(&Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("limit requires variable as second argument".to_string()))
+                }
+            }
+
+            // Matrix operations
+            ("det", 1, _) | ("determinant", 1, _) => {
+                if let Expr::Matrix(rows) = &args[0] {
+                    self.matrix_det(rows)
+                } else {
+                    Err(CasError::Type("det requires a matrix argument".to_string()))
+                }
+            }
+
+            ("inv", 1, _) | ("inverse", 1, _) => {
+                if let Expr::Matrix(rows) = &args[0] {
+                    self.matrix_inv(rows)
+                } else {
+                    Err(CasError::Type("inv requires a matrix argument".to_string()))
+                }
+            }
+
+            ("transpose", 1, _) | ("T", 1, _) => {
+                if let Expr::Matrix(rows) = &args[0] {
+                    self.matrix_transpose(rows)
+                } else {
+                    Err(CasError::Type("transpose requires a matrix argument".to_string()))
+                }
+            }
+
+            ("trace", 1, _) | ("tr", 1, _) => {
+                if let Expr::Matrix(rows) = &args[0] {
+                    self.matrix_trace(rows)
+                } else {
+                    Err(CasError::Type("trace requires a matrix argument".to_string()))
+                }
+            }
+
+            ("matmul", 2, _) => {
+                if let (Expr::Matrix(a), Expr::Matrix(b)) = (&args[0], &args[1]) {
+                    self.matrix_mul(a, b)
+                } else {
+                    Err(CasError::Type("matmul requires two matrix arguments".to_string()))
+                }
+            }
+
+            ("identity", 1, Some(n)) => {
+                let n = n as usize;
+                if n == 0 || n > 100 {
+                    return Err(CasError::EvaluationError("identity matrix size must be 1-100".to_string()));
+                }
+                let mut rows = Vec::with_capacity(n);
+                for i in 0..n {
+                    let mut row = vec![Expr::Integer(0); n];
+                    row[i] = Expr::Integer(1);
+                    rows.push(row);
+                }
+                Ok(Expr::Matrix(rows))
+            }
+
             _ => {
                 if self.exact_mode {
                     Ok(Expr::func(name, args.to_vec()))
@@ -561,6 +650,237 @@ impl Evaluator {
                 }
             }
         }
+    }
+
+    /// Compute matrix determinant
+    fn matrix_det(&self, rows: &[Vec<Expr>]) -> Result<Expr> {
+        let n = rows.len();
+        if n == 0 {
+            return Err(CasError::EvaluationError("empty matrix".to_string()));
+        }
+        if rows.iter().any(|r| r.len() != n) {
+            return Err(CasError::EvaluationError("det requires square matrix".to_string()));
+        }
+
+        // Convert to f64 for numerical computation
+        let mut matrix: Vec<Vec<f64>> = Vec::with_capacity(n);
+        for row in rows {
+            let mut num_row = Vec::with_capacity(n);
+            for elem in row {
+                num_row.push(self.to_f64(elem)?);
+            }
+            matrix.push(num_row);
+        }
+
+        // LU decomposition for determinant
+        let det = self.det_lu(&mut matrix, n);
+
+        // Return as integer if close to integer
+        if det.fract().abs() < 1e-10 {
+            Ok(Expr::Integer(det.round() as i64))
+        } else {
+            Ok(Expr::Float(det))
+        }
+    }
+
+    /// LU decomposition determinant
+    fn det_lu(&self, matrix: &mut [Vec<f64>], n: usize) -> f64 {
+        let mut det = 1.0;
+
+        for col in 0..n {
+            // Find pivot
+            let mut max_row = col;
+            for row in (col + 1)..n {
+                if matrix[row][col].abs() > matrix[max_row][col].abs() {
+                    max_row = row;
+                }
+            }
+
+            if max_row != col {
+                matrix.swap(col, max_row);
+                det = -det; // Swap changes sign
+            }
+
+            if matrix[col][col].abs() < 1e-15 {
+                return 0.0; // Singular matrix
+            }
+
+            det *= matrix[col][col];
+
+            for row in (col + 1)..n {
+                let factor = matrix[row][col] / matrix[col][col];
+                for j in col..n {
+                    matrix[row][j] -= factor * matrix[col][j];
+                }
+            }
+        }
+
+        det
+    }
+
+    /// Compute matrix inverse using Gauss-Jordan elimination
+    fn matrix_inv(&self, rows: &[Vec<Expr>]) -> Result<Expr> {
+        let n = rows.len();
+        if n == 0 {
+            return Err(CasError::EvaluationError("empty matrix".to_string()));
+        }
+        if rows.iter().any(|r| r.len() != n) {
+            return Err(CasError::EvaluationError("inv requires square matrix".to_string()));
+        }
+
+        // Convert to f64
+        let mut aug: Vec<Vec<f64>> = Vec::with_capacity(n);
+        for (i, row) in rows.iter().enumerate() {
+            let mut aug_row = Vec::with_capacity(2 * n);
+            for elem in row {
+                aug_row.push(self.to_f64(elem)?);
+            }
+            // Append identity matrix
+            for j in 0..n {
+                aug_row.push(if i == j { 1.0 } else { 0.0 });
+            }
+            aug.push(aug_row);
+        }
+
+        // Gauss-Jordan elimination
+        for col in 0..n {
+            // Find pivot
+            let mut max_row = col;
+            for row in (col + 1)..n {
+                if aug[row][col].abs() > aug[max_row][col].abs() {
+                    max_row = row;
+                }
+            }
+            aug.swap(col, max_row);
+
+            if aug[col][col].abs() < 1e-15 {
+                return Err(CasError::EvaluationError("matrix is singular".to_string()));
+            }
+
+            // Scale pivot row
+            let pivot = aug[col][col];
+            for j in 0..(2 * n) {
+                aug[col][j] /= pivot;
+            }
+
+            // Eliminate column
+            for row in 0..n {
+                if row != col {
+                    let factor = aug[row][col];
+                    for j in 0..(2 * n) {
+                        aug[row][j] -= factor * aug[col][j];
+                    }
+                }
+            }
+        }
+
+        // Extract inverse from right half
+        let mut result = Vec::with_capacity(n);
+        for row in &aug {
+            let mut result_row = Vec::with_capacity(n);
+            for j in n..(2 * n) {
+                let val = row[j];
+                if val.fract().abs() < 1e-10 {
+                    result_row.push(Expr::Integer(val.round() as i64));
+                } else {
+                    result_row.push(Expr::Float(val));
+                }
+            }
+            result.push(result_row);
+        }
+
+        Ok(Expr::Matrix(result))
+    }
+
+    /// Transpose a matrix
+    fn matrix_transpose(&self, rows: &[Vec<Expr>]) -> Result<Expr> {
+        if rows.is_empty() {
+            return Ok(Expr::Matrix(vec![]));
+        }
+        let n_rows = rows.len();
+        let n_cols = rows[0].len();
+
+        let mut result = Vec::with_capacity(n_cols);
+        for j in 0..n_cols {
+            let mut new_row = Vec::with_capacity(n_rows);
+            for row in rows {
+                if j < row.len() {
+                    new_row.push(row[j].clone());
+                } else {
+                    new_row.push(Expr::Integer(0));
+                }
+            }
+            result.push(new_row);
+        }
+
+        Ok(Expr::Matrix(result))
+    }
+
+    /// Compute trace (sum of diagonal)
+    fn matrix_trace(&self, rows: &[Vec<Expr>]) -> Result<Expr> {
+        let n = rows.len();
+        if n == 0 {
+            return Err(CasError::EvaluationError("empty matrix".to_string()));
+        }
+        if rows.iter().any(|r| r.len() != n) {
+            return Err(CasError::EvaluationError("trace requires square matrix".to_string()));
+        }
+
+        let mut sum = 0.0;
+        for i in 0..n {
+            sum += self.to_f64(&rows[i][i])?;
+        }
+
+        if sum.fract().abs() < 1e-10 {
+            Ok(Expr::Integer(sum.round() as i64))
+        } else {
+            Ok(Expr::Float(sum))
+        }
+    }
+
+    /// Matrix multiplication
+    fn matrix_mul(&self, a: &[Vec<Expr>], b: &[Vec<Expr>]) -> Result<Expr> {
+        if a.is_empty() || b.is_empty() {
+            return Err(CasError::EvaluationError("empty matrix".to_string()));
+        }
+
+        let m = a.len();
+        let n = a[0].len();
+        let p = b[0].len();
+
+        if b.len() != n {
+            return Err(CasError::EvaluationError(format!(
+                "matrix dimensions don't match for multiplication: {}x{} * {}x{}",
+                m, n, b.len(), p
+            )));
+        }
+
+        // Convert to f64
+        let a_num: Vec<Vec<f64>> = a.iter()
+            .map(|row| row.iter().map(|e| self.to_f64(e)).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+        let b_num: Vec<Vec<f64>> = b.iter()
+            .map(|row| row.iter().map(|e| self.to_f64(e)).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut result = Vec::with_capacity(m);
+        for i in 0..m {
+            let mut row = Vec::with_capacity(p);
+            for j in 0..p {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += a_num[i][k] * b_num[k][j];
+                }
+                if sum.fract().abs() < 1e-10 {
+                    row.push(Expr::Integer(sum.round() as i64));
+                } else {
+                    row.push(Expr::Float(sum));
+                }
+            }
+            result.push(row);
+        }
+
+        Ok(Expr::Matrix(result))
     }
 }
 

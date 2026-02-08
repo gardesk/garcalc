@@ -376,59 +376,105 @@ impl App {
 
         // In graph mode, add functions to the graph
         if self.mode == Mode::Graph {
-            // Try to parse as a function to graph (2D: y = f(x))
-            // Support formats: "y = expr", "expr" (implicit y=)
-            let expr_str = if let Some(rest) = input.strip_prefix("y=").or_else(|| input.strip_prefix("y =")) {
-                rest.trim()
-            } else {
-                input.trim()
-            };
+            // Check for implicit curve (equation with both x and y)
+            // Format: "x^2 + y^2 = 1" becomes F(x,y) = x^2 + y^2 - 1 = 0
+            if let Some(eq_pos) = input.find('=') {
+                let lhs = input[..eq_pos].trim();
+                let rhs = input[eq_pos + 1..].trim();
 
-            match parser::parse(expr_str) {
-                Ok(expr) => {
-                    self.graph.add_explicit(expr);
-                    let entry = HistoryEntry {
-                        input: input.clone(),
-                        result: format!("Added function {}", self.graph.functions.len()),
-                        error: None,
-                    };
-                    self.history.push(entry);
+                // Check if this is "y = f(x)" (explicit) or implicit
+                if lhs == "y" {
+                    // Explicit function y = f(x)
+                    match parser::parse(rhs) {
+                        Ok(expr) => {
+                            self.graph.add_explicit(expr);
+                            self.history.push(HistoryEntry {
+                                input: input.clone(),
+                                result: format!("Added function {}", self.graph.functions.len()),
+                                error: None,
+                            });
+                        }
+                        Err(e) => {
+                            self.history.push(HistoryEntry {
+                                input: input.clone(),
+                                result: String::new(),
+                                error: Some(e.to_string()),
+                            });
+                        }
+                    }
+                } else {
+                    // Implicit curve: lhs = rhs -> lhs - rhs = 0
+                    let implicit_expr = format!("({}) - ({})", lhs, rhs);
+                    match parser::parse(&implicit_expr) {
+                        Ok(expr) => {
+                            self.graph.add_implicit(expr);
+                            self.history.push(HistoryEntry {
+                                input: input.clone(),
+                                result: format!("Added implicit curve {}", self.graph.functions.len()),
+                                error: None,
+                            });
+                        }
+                        Err(e) => {
+                            self.history.push(HistoryEntry {
+                                input: input.clone(),
+                                result: String::new(),
+                                error: Some(e.to_string()),
+                            });
+                        }
+                    }
                 }
-                Err(e) => {
-                    let entry = HistoryEntry {
-                        input: input.clone(),
-                        result: String::new(),
-                        error: Some(e.to_string()),
-                    };
-                    self.history.push(entry);
+            } else if input.contains(',') && (input.contains('t') || input.starts_with('(')) {
+                // Parametric curve: (x(t), y(t)) or x(t), y(t)
+                self.parse_parametric(&input);
+            } else {
+                // No equals sign - treat as explicit y = expr
+                match parser::parse(input.trim()) {
+                    Ok(expr) => {
+                        self.graph.add_explicit(expr);
+                        self.history.push(HistoryEntry {
+                            input: input.clone(),
+                            result: format!("Added function {}", self.graph.functions.len()),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        self.history.push(HistoryEntry {
+                            input: input.clone(),
+                            result: String::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
             }
         } else if self.mode == Mode::Graph3D {
-            // Try to parse as a surface (3D: z = f(x, y))
-            // Support formats: "z = expr", "expr" (implicit z=)
-            let expr_str = if let Some(rest) = input.strip_prefix("z=").or_else(|| input.strip_prefix("z =")) {
-                rest.trim()
+            // Check for parametric surface: (x(u,v), y(u,v), z(u,v))
+            if input.contains(',') && (input.contains('u') || input.starts_with('(')) {
+                self.parse_parametric_surface(&input);
             } else {
-                input.trim()
-            };
+                // Try to parse as explicit surface (3D: z = f(x, y))
+                // Support formats: "z = expr", "expr" (implicit z=)
+                let expr_str = if let Some(rest) = input.strip_prefix("z=").or_else(|| input.strip_prefix("z =")) {
+                    rest.trim()
+                } else {
+                    input.trim()
+                };
 
-            match parser::parse(expr_str) {
-                Ok(expr) => {
-                    self.graph3d.add_explicit(expr);
-                    let entry = HistoryEntry {
-                        input: input.clone(),
-                        result: format!("Added surface {}", self.graph3d.surfaces.len()),
-                        error: None,
-                    };
-                    self.history.push(entry);
-                }
-                Err(e) => {
-                    let entry = HistoryEntry {
-                        input: input.clone(),
-                        result: String::new(),
-                        error: Some(e.to_string()),
-                    };
-                    self.history.push(entry);
+                match parser::parse(expr_str) {
+                    Ok(expr) => {
+                        self.graph3d.add_explicit(expr);
+                        self.history.push(HistoryEntry {
+                            input: input.clone(),
+                            result: format!("Added surface {}", self.graph3d.surfaces.len()),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        self.history.push(HistoryEntry {
+                            input: input.clone(),
+                            result: String::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
             }
         } else {
@@ -452,6 +498,137 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.history_index = None;
+    }
+
+    /// Parse and add a parametric curve
+    /// Formats: "(sin(t), cos(t))" or "sin(t), cos(t)" or "(sin(t), cos(t), 0, 2*pi)"
+    fn parse_parametric(&mut self, input: &str) {
+        // Remove outer parentheses if present
+        let inner = input.trim().strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(input.trim());
+
+        // Split by comma
+        let parts: Vec<&str> = inner.split(',').collect();
+
+        if parts.len() < 2 {
+            self.history.push(HistoryEntry {
+                input: input.to_string(),
+                result: String::new(),
+                error: Some("Parametric curve needs at least two components: x(t), y(t)".to_string()),
+            });
+            return;
+        }
+
+        // Parse x(t) and y(t)
+        let x_result = parser::parse(parts[0].trim());
+        let y_result = parser::parse(parts[1].trim());
+
+        // Optional t range (default 0 to 2*pi)
+        let (t_min, t_max) = if parts.len() >= 4 {
+            let min_result = parser::parse(parts[2].trim())
+                .and_then(|e| {
+                    let eval = Evaluator::new();
+                    eval.eval(&e).ok().and_then(|v| match v {
+                        garcalc_cas::Expr::Integer(n) => Some(n as f64),
+                        garcalc_cas::Expr::Float(f) => Some(f),
+                        _ => None,
+                    }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+                });
+            let max_result = parser::parse(parts[3].trim())
+                .and_then(|e| {
+                    let eval = Evaluator::new();
+                    eval.eval(&e).ok().and_then(|v| match v {
+                        garcalc_cas::Expr::Integer(n) => Some(n as f64),
+                        garcalc_cas::Expr::Float(f) => Some(f),
+                        _ => None,
+                    }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+                });
+            match (min_result, max_result) {
+                (Ok(min), Ok(max)) => (min, max),
+                _ => (0.0, std::f64::consts::TAU),
+            }
+        } else {
+            (0.0, std::f64::consts::TAU)
+        };
+
+        match (x_result, y_result) {
+            (Ok(x_expr), Ok(y_expr)) => {
+                self.graph.add_parametric(x_expr, y_expr, (t_min, t_max));
+                self.history.push(HistoryEntry {
+                    input: input.to_string(),
+                    result: format!("Added parametric curve {}", self.graph.functions.len()),
+                    error: None,
+                });
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                self.history.push(HistoryEntry {
+                    input: input.to_string(),
+                    result: String::new(),
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+
+    /// Parse and add a parametric surface
+    /// Format: "(x(u,v), y(u,v), z(u,v))" or with ranges "(x, y, z, u_min, u_max, v_min, v_max)"
+    fn parse_parametric_surface(&mut self, input: &str) {
+        let inner = input.trim().strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(input.trim());
+
+        let parts: Vec<&str> = inner.split(',').collect();
+
+        if parts.len() < 3 {
+            self.history.push(HistoryEntry {
+                input: input.to_string(),
+                result: String::new(),
+                error: Some("Parametric surface needs three components: x(u,v), y(u,v), z(u,v)".to_string()),
+            });
+            return;
+        }
+
+        let x_result = parser::parse(parts[0].trim());
+        let y_result = parser::parse(parts[1].trim());
+        let z_result = parser::parse(parts[2].trim());
+
+        // Default u,v ranges from 0 to 2*pi
+        let (u_min, u_max, v_min, v_max) = if parts.len() >= 7 {
+            let parse_num = |s: &str| -> f64 {
+                parser::parse(s.trim())
+                    .and_then(|e| {
+                        let eval = Evaluator::new();
+                        eval.eval(&e).ok().and_then(|v| match v {
+                            garcalc_cas::Expr::Integer(n) => Some(n as f64),
+                            garcalc_cas::Expr::Float(f) => Some(f),
+                            _ => None,
+                        }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+                    })
+                    .unwrap_or(0.0)
+            };
+            (parse_num(parts[3]), parse_num(parts[4]), parse_num(parts[5]), parse_num(parts[6]))
+        } else {
+            (0.0, std::f64::consts::TAU, 0.0, std::f64::consts::TAU)
+        };
+
+        match (x_result, y_result, z_result) {
+            (Ok(x_expr), Ok(y_expr), Ok(z_expr)) => {
+                self.graph3d.add_parametric(x_expr, y_expr, z_expr, (u_min, u_max), (v_min, v_max));
+                self.history.push(HistoryEntry {
+                    input: input.to_string(),
+                    result: format!("Added parametric surface {}", self.graph3d.surfaces.len()),
+                    error: None,
+                });
+            }
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                self.history.push(HistoryEntry {
+                    input: input.to_string(),
+                    result: String::new(),
+                    error: Some(e.to_string()),
+                });
+            }
+        }
     }
 
     fn render(&mut self) -> Result<()> {

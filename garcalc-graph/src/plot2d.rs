@@ -117,6 +117,29 @@ impl Graph2D {
         });
     }
 
+    /// Add an implicit curve F(x,y) = 0
+    pub fn add_implicit(&mut self, expr: Expr) {
+        let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
+        self.functions.push(Plottable::Implicit2D {
+            expr,
+            x_var: "x".to_string(),
+            y_var: "y".to_string(),
+            color,
+        });
+    }
+
+    /// Add a parametric curve (x(t), y(t))
+    pub fn add_parametric(&mut self, x_expr: Expr, y_expr: Expr, t_range: (f64, f64)) {
+        let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
+        self.functions.push(Plottable::Parametric2D {
+            x_expr,
+            y_expr,
+            t_var: "t".to_string(),
+            t_range,
+            color,
+        });
+    }
+
     /// Clear all functions
     pub fn clear_functions(&mut self) {
         self.functions.clear();
@@ -331,6 +354,9 @@ impl Graph2D {
             Plottable::Explicit2D { expr, x_var, color, style } => {
                 self.draw_explicit(ctx, expr, x_var, *color, *style, width, height);
             }
+            Plottable::Implicit2D { expr, x_var, y_var, color } => {
+                self.draw_implicit(ctx, expr, x_var, y_var, *color, width, height);
+            }
             Plottable::Parametric2D { x_expr, y_expr, t_var, t_range, color } => {
                 self.draw_parametric(ctx, x_expr, y_expr, t_var, *t_range, *color, width, height);
             }
@@ -442,6 +468,118 @@ impl Graph2D {
                             ctx.line_to(sx, sy);
                         }
                     }
+                }
+            }
+        }
+
+        let _ = ctx.stroke();
+    }
+
+    /// Draw implicit curve F(x,y) = 0 using marching squares
+    fn draw_implicit(
+        &self,
+        ctx: &Context,
+        expr: &Expr,
+        x_var: &str,
+        y_var: &str,
+        color: Color,
+        width: u32,
+        height: u32,
+    ) {
+        set_color(ctx, color);
+        ctx.set_line_width(self.config.curve_width);
+
+        let mut evaluator = Evaluator::new();
+
+        // Grid resolution for marching squares
+        let grid_size = 100; // Number of cells per dimension
+        let x_range = self.viewport.x_max - self.viewport.x_min;
+        let y_range = self.viewport.y_max - self.viewport.y_min;
+        let dx = x_range / grid_size as f64;
+        let dy = y_range / grid_size as f64;
+
+        // Evaluate F(x,y) at grid points
+        let mut values = vec![vec![0.0f64; grid_size + 1]; grid_size + 1];
+        for i in 0..=grid_size {
+            let x = self.viewport.x_min + i as f64 * dx;
+            for j in 0..=grid_size {
+                let y = self.viewport.y_min + j as f64 * dy;
+                evaluator.set_var(x_var, Expr::Float(x));
+                evaluator.set_var(y_var, Expr::Float(y));
+                if let Ok(result) = evaluator.eval(expr) {
+                    if let Ok(v) = expr_to_f64(&result) {
+                        values[i][j] = if v.is_finite() { v } else { f64::NAN };
+                    } else {
+                        values[i][j] = f64::NAN;
+                    }
+                } else {
+                    values[i][j] = f64::NAN;
+                }
+            }
+        }
+
+        // Marching squares: for each cell, draw line segments where F=0
+        for i in 0..grid_size {
+            for j in 0..grid_size {
+                let x0 = self.viewport.x_min + i as f64 * dx;
+                let y0 = self.viewport.y_min + j as f64 * dy;
+                let x1 = x0 + dx;
+                let y1 = y0 + dy;
+
+                let v00 = values[i][j];
+                let v10 = values[i + 1][j];
+                let v01 = values[i][j + 1];
+                let v11 = values[i + 1][j + 1];
+
+                // Skip cells with NaN
+                if v00.is_nan() || v10.is_nan() || v01.is_nan() || v11.is_nan() {
+                    continue;
+                }
+
+                // Classify cell corners by sign
+                let s00 = v00 >= 0.0;
+                let s10 = v10 >= 0.0;
+                let s01 = v01 >= 0.0;
+                let s11 = v11 >= 0.0;
+
+                // Build case index (4-bit)
+                let case = (s00 as u8) | ((s10 as u8) << 1) | ((s01 as u8) << 2) | ((s11 as u8) << 3);
+
+                // Linear interpolation to find zero crossing on an edge
+                let interp = |va: f64, vb: f64| -> f64 {
+                    if (va - vb).abs() < 1e-15 { 0.5 } else { va / (va - vb) }
+                };
+
+                // Edge midpoints where contour crosses
+                let e_bottom = || { let t = interp(v00, v10); (x0 + t * dx, y0) };
+                let e_top = || { let t = interp(v01, v11); (x0 + t * dx, y1) };
+                let e_left = || { let t = interp(v00, v01); (x0, y0 + t * dy) };
+                let e_right = || { let t = interp(v10, v11); (x1, y0 + t * dy) };
+
+                // Draw line segments based on marching squares case
+                let draw_line = |p1: (f64, f64), p2: (f64, f64)| {
+                    let (sx1, sy1) = self.math_to_screen(p1.0, p1.1, width, height);
+                    let (sx2, sy2) = self.math_to_screen(p2.0, p2.1, width, height);
+                    ctx.move_to(sx1, sy1);
+                    ctx.line_to(sx2, sy2);
+                };
+
+                match case {
+                    0 | 15 => {} // All same sign - no contour
+                    1 | 14 => draw_line(e_bottom(), e_left()),
+                    2 | 13 => draw_line(e_bottom(), e_right()),
+                    3 | 12 => draw_line(e_left(), e_right()),
+                    4 | 11 => draw_line(e_left(), e_top()),
+                    5 | 10 => {
+                        // Ambiguous - saddle point. Draw both segments.
+                        draw_line(e_bottom(), e_left());
+                        draw_line(e_top(), e_right());
+                    }
+                    6 | 9 => {
+                        draw_line(e_bottom(), e_top());
+                    }
+                    7 | 8 => draw_line(e_top(), e_right()),
+                    _ => {}
                 }
             }
         }

@@ -530,6 +530,482 @@ impl Integrator {
     }
 }
 
+/// Limit calculator
+pub struct Limits;
+
+impl Limits {
+    /// Compute the limit of an expression as var approaches point
+    pub fn limit(expr: &Expr, var: &Symbol, point: &Expr, direction: Option<crate::expr::LimitDirection>) -> Result<Expr> {
+        Self::limit_impl(expr, var, point, direction, 0)
+    }
+
+    fn limit_impl(
+        expr: &Expr,
+        var: &Symbol,
+        point: &Expr,
+        direction: Option<crate::expr::LimitDirection>,
+        depth: usize,
+    ) -> Result<Expr> {
+        // Prevent infinite recursion
+        if depth > 10 {
+            return Ok(Expr::Limit {
+                expr: Box::new(expr.clone()),
+                var: var.clone(),
+                point: Box::new(point.clone()),
+                direction,
+            });
+        }
+
+        // Check if expression contains the variable
+        if !expr.contains_var(var) {
+            return Ok(expr.clone());
+        }
+
+        // Handle infinity limits
+        if let Expr::Infinity(sign) = point {
+            return Self::limit_at_infinity(expr, var, *sign, depth);
+        }
+
+        // Try direct substitution first
+        let substituted = Simplifier::substitute(expr, var, point);
+        let simplified = Simplifier::simplify(&substituted);
+
+        // Check if result is defined
+        if !Self::is_indeterminate(&simplified) {
+            return Ok(simplified);
+        }
+
+        // Handle indeterminate forms
+        match expr {
+            // Limit of a sum is sum of limits
+            Expr::Add(terms) => {
+                let limits: Result<Vec<_>> = terms
+                    .iter()
+                    .map(|t| Self::limit_impl(t, var, point, direction, depth + 1))
+                    .collect();
+                Ok(Simplifier::simplify(&Expr::add(limits?)))
+            }
+
+            // Limit of a product - check for quotient form first
+            Expr::Mul(factors) => {
+                // Try to extract numerator and denominator for L'Hôpital
+                let mut numerator_parts: Vec<Expr> = Vec::new();
+                let mut denominator_parts: Vec<Expr> = Vec::new();
+
+                for f in factors {
+                    if let Expr::Pow(base, exp) = f {
+                        if Self::is_negative_one(exp) {
+                            denominator_parts.push((**base).clone());
+                            continue;
+                        } else if let Expr::Neg(inner) = exp.as_ref() {
+                            // Handle x^(-n) where n > 1
+                            if let Expr::Integer(n) = inner.as_ref() {
+                                if *n > 0 {
+                                    denominator_parts.push(Expr::pow((**base).clone(), Expr::Integer(*n)));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    numerator_parts.push(f.clone());
+                }
+
+                // If we have both numerator and denominator, try L'Hôpital
+                if !denominator_parts.is_empty() && !numerator_parts.is_empty() {
+                    let numerator = if numerator_parts.len() == 1 {
+                        numerator_parts.pop().unwrap()
+                    } else {
+                        Expr::mul(numerator_parts)
+                    };
+                    let denominator = if denominator_parts.len() == 1 {
+                        denominator_parts.pop().unwrap()
+                    } else {
+                        Expr::mul(denominator_parts)
+                    };
+
+                    // Check if it's an indeterminate form (0/0 or ∞/∞)
+                    let num_at_point = Simplifier::simplify(&Simplifier::substitute(&numerator, var, point));
+                    let denom_at_point = Simplifier::simplify(&Simplifier::substitute(&denominator, var, point));
+
+                    let num_zero = Self::is_zero(&num_at_point);
+                    let denom_zero = Self::is_zero(&denom_at_point);
+                    let num_inf = matches!(num_at_point, Expr::Infinity(_));
+                    let denom_inf = matches!(denom_at_point, Expr::Infinity(_));
+
+                    if (num_zero && denom_zero) || (num_inf && denom_inf) {
+                        return Self::try_lhopital(&numerator, &denominator, var, point, direction, depth);
+                    }
+                }
+
+                // Not a quotient or not indeterminate - compute limits of factors
+                let limits: Result<Vec<_>> = factors
+                    .iter()
+                    .map(|f| Self::limit_impl(f, var, point, direction, depth + 1))
+                    .collect();
+                Ok(Simplifier::simplify(&Expr::mul(limits?)))
+            }
+
+            // Handle 1/x or similar
+            Expr::Pow(base, exp) if Self::is_negative_one(exp) => {
+                let base_limit = Self::limit_impl(base, var, point, direction, depth + 1)?;
+                if Self::is_zero(&base_limit) {
+                    // 1/0 -> infinity (sign depends on direction)
+                    Ok(Expr::Infinity(crate::expr::Sign::Positive))
+                } else {
+                    Ok(Simplifier::simplify(&Expr::pow(base_limit, Expr::Integer(-1))))
+                }
+            }
+
+            // General power
+            Expr::Pow(base, exp) => {
+                let base_limit = Self::limit_impl(base, var, point, direction, depth + 1)?;
+                let exp_limit = Self::limit_impl(exp, var, point, direction, depth + 1)?;
+                Ok(Simplifier::simplify(&Expr::pow(base_limit, exp_limit)))
+            }
+
+            // Functions
+            Expr::Func(name, args) => {
+                // Compute limits of arguments
+                let arg_limits: Result<Vec<_>> = args
+                    .iter()
+                    .map(|a| Self::limit_impl(a, var, point, direction, depth + 1))
+                    .collect();
+                let result = Expr::func(name, arg_limits?);
+                Ok(Simplifier::simplify(&result))
+            }
+
+            // Negation
+            Expr::Neg(e) => {
+                let inner_limit = Self::limit_impl(e, var, point, direction, depth + 1)?;
+                Ok(Expr::neg(inner_limit))
+            }
+
+            // Default: return unevaluated limit
+            _ => Ok(Expr::Limit {
+                expr: Box::new(expr.clone()),
+                var: var.clone(),
+                point: Box::new(point.clone()),
+                direction,
+            }),
+        }
+    }
+
+    /// Handle limits as x → ±∞
+    fn limit_at_infinity(
+        expr: &Expr,
+        var: &Symbol,
+        sign: crate::expr::Sign,
+        depth: usize,
+    ) -> Result<Expr> {
+        match expr {
+            // Polynomial: leading term dominates
+            Expr::Add(terms) => {
+                // Find the term with highest degree in var
+                let mut max_degree = 0i32;
+                let mut leading_term = Expr::Integer(0);
+
+                for term in terms {
+                    let deg = Self::degree_in(term, var);
+                    if deg > max_degree {
+                        max_degree = deg;
+                        leading_term = term.clone();
+                    } else if deg == max_degree {
+                        // Combine terms of same degree
+                        leading_term = Expr::add(vec![leading_term, term.clone()]);
+                    }
+                }
+
+                if max_degree > 0 {
+                    // Infinity (sign depends on leading coefficient and sign of infinity)
+                    let coeff = Self::leading_coefficient(&leading_term, var);
+                    let coeff_sign = Self::expr_sign(&coeff);
+                    let result_sign = if sign == crate::expr::Sign::Positive {
+                        coeff_sign
+                    } else if max_degree % 2 == 0 {
+                        coeff_sign
+                    } else {
+                        coeff_sign.map(|s| match s {
+                            crate::expr::Sign::Positive => crate::expr::Sign::Negative,
+                            crate::expr::Sign::Negative => crate::expr::Sign::Positive,
+                        })
+                    };
+
+                    match result_sign {
+                        Some(s) => Ok(Expr::Infinity(s)),
+                        None => Ok(Expr::Limit {
+                            expr: Box::new(expr.clone()),
+                            var: var.clone(),
+                            point: Box::new(Expr::Infinity(sign)),
+                            direction: None,
+                        }),
+                    }
+                } else if max_degree == 0 {
+                    // Constant
+                    Ok(leading_term)
+                } else {
+                    // Negative degree -> 0
+                    Ok(Expr::Integer(0))
+                }
+            }
+
+            // For f/g, compare degrees
+            Expr::Mul(factors) => {
+                // Try to find quotient pattern
+                let mut num_degree = 0i32;
+                let mut denom_degree = 0i32;
+
+                for f in factors {
+                    if let Expr::Pow(base, exp) = f {
+                        if Self::is_negative_one(exp) {
+                            denom_degree += Self::degree_in(base, var);
+                            continue;
+                        }
+                    }
+                    num_degree += Self::degree_in(f, var);
+                }
+
+                if denom_degree > 0 {
+                    // This is a rational function
+                    if num_degree > denom_degree {
+                        Ok(Expr::Infinity(sign))
+                    } else if num_degree < denom_degree {
+                        Ok(Expr::Integer(0))
+                    } else {
+                        // Same degree - find ratio of leading coefficients
+                        // For now, return unevaluated
+                        Ok(Expr::Limit {
+                            expr: Box::new(expr.clone()),
+                            var: var.clone(),
+                            point: Box::new(Expr::Infinity(sign)),
+                            direction: None,
+                        })
+                    }
+                } else {
+                    // Just a product
+                    let limits: Result<Vec<_>> = factors
+                        .iter()
+                        .map(|f| Self::limit_at_infinity(f, var, sign, depth + 1))
+                        .collect();
+                    Ok(Simplifier::simplify(&Expr::mul(limits?)))
+                }
+            }
+
+            // x^n as x→∞
+            Expr::Pow(base, exp) if base.as_ref() == &Expr::Symbol(var.clone()) => {
+                match exp.as_ref() {
+                    Expr::Integer(n) if *n > 0 => Ok(Expr::Infinity(sign)),
+                    Expr::Integer(n) if *n < 0 => Ok(Expr::Integer(0)),
+                    Expr::Integer(0) => Ok(Expr::Integer(1)),
+                    _ => Ok(Expr::Limit {
+                        expr: Box::new(expr.clone()),
+                        var: var.clone(),
+                        point: Box::new(Expr::Infinity(sign)),
+                        direction: None,
+                    }),
+                }
+            }
+
+            // e^x as x→∞ is ∞, as x→-∞ is 0
+            Expr::Func(name, args) if name == "exp" && args.len() == 1 => {
+                if args[0] == Expr::Symbol(var.clone()) {
+                    match sign {
+                        crate::expr::Sign::Positive => Ok(Expr::Infinity(crate::expr::Sign::Positive)),
+                        crate::expr::Sign::Negative => Ok(Expr::Integer(0)),
+                    }
+                } else {
+                    let arg_limit = Self::limit_at_infinity(&args[0], var, sign, depth + 1)?;
+                    Ok(Expr::func("exp", vec![arg_limit]))
+                }
+            }
+
+            // 1/x as x→∞ is 0
+            Expr::Symbol(s) if s == var => Ok(Expr::Infinity(sign)),
+
+            // Constant
+            _ if !expr.contains_var(var) => Ok(expr.clone()),
+
+            // Default
+            _ => Ok(Expr::Limit {
+                expr: Box::new(expr.clone()),
+                var: var.clone(),
+                point: Box::new(Expr::Infinity(sign)),
+                direction: None,
+            }),
+        }
+    }
+
+    /// Try L'Hôpital's rule for 0/0 or ∞/∞ forms
+    fn try_lhopital(
+        num: &Expr,
+        denom: &Expr,
+        var: &Symbol,
+        point: &Expr,
+        direction: Option<crate::expr::LimitDirection>,
+        depth: usize,
+    ) -> Result<Expr> {
+        if depth > 5 {
+            return Ok(Expr::Limit {
+                expr: Box::new(Expr::mul(vec![
+                    num.clone(),
+                    Expr::pow(denom.clone(), Expr::Integer(-1)),
+                ])),
+                var: var.clone(),
+                point: Box::new(point.clone()),
+                direction,
+            });
+        }
+
+        // Check if both approach 0 or both approach ∞
+        let num_limit = Simplifier::simplify(&Simplifier::substitute(num, var, point));
+        let denom_limit = Simplifier::simplify(&Simplifier::substitute(denom, var, point));
+
+        let num_is_zero = Self::is_zero(&num_limit);
+        let denom_is_zero = Self::is_zero(&denom_limit);
+        let num_is_inf = matches!(num_limit, Expr::Infinity(_));
+        let denom_is_inf = matches!(denom_limit, Expr::Infinity(_));
+
+        if (num_is_zero && denom_is_zero) || (num_is_inf && denom_is_inf) {
+            // Apply L'Hôpital's rule
+            let num_deriv = Differentiator::diff(num, var)?;
+            let denom_deriv = Differentiator::diff(denom, var)?;
+
+            // Recursive limit of f'/g'
+            let quotient = Expr::mul(vec![
+                num_deriv,
+                Expr::pow(denom_deriv, Expr::Integer(-1)),
+            ]);
+            Self::limit_impl(&quotient, var, point, direction, depth + 1)
+        } else if denom_is_zero && !num_is_zero {
+            // Limit is ±∞ or doesn't exist
+            let num_sign = Self::expr_sign(&num_limit);
+            match num_sign {
+                Some(s) => Ok(Expr::Infinity(s)),
+                None => Ok(Expr::Undefined),
+            }
+        } else {
+            // Normal division
+            Ok(Simplifier::simplify(&Expr::mul(vec![
+                num_limit,
+                Expr::pow(denom_limit, Expr::Integer(-1)),
+            ])))
+        }
+    }
+
+    /// Check if expression is an indeterminate form
+    fn is_indeterminate(expr: &Expr) -> bool {
+        match expr {
+            Expr::Undefined => true,
+            Expr::Float(x) if x.is_nan() => true,
+            // Rational with 0 denominator is infinity (0/0 if num is also 0)
+            Expr::Rational(r) if r.den == 0 => true,
+            // Check for 0 * ∞ or similar patterns in products
+            Expr::Mul(factors) => {
+                let has_infinity = factors.iter().any(|f| {
+                    matches!(f, Expr::Infinity(_))
+                        || matches!(f, Expr::Rational(r) if r.den == 0)
+                });
+                let has_zero = factors.iter().any(|f| Self::is_zero(f));
+                // 0 * ∞ is indeterminate
+                if has_infinity && has_zero {
+                    return true;
+                }
+                // Also check if any factor is indeterminate
+                factors.iter().any(Self::is_indeterminate)
+            }
+            _ => false,
+        }
+    }
+
+    /// Try to evaluate an expression to a float value
+    fn try_eval_numeric(expr: &Expr) -> Option<f64> {
+        use crate::eval::Evaluator;
+        let evaluator = Evaluator::new();
+        match evaluator.eval(expr) {
+            Ok(Expr::Integer(n)) => Some(n as f64),
+            Ok(Expr::Float(x)) => Some(x),
+            Ok(Expr::Rational(r)) => Some(r.to_f64()),
+            _ => None,
+        }
+    }
+
+    /// Check if expression is zero
+    fn is_zero(expr: &Expr) -> bool {
+        if matches!(expr, Expr::Integer(0))
+            || matches!(expr, Expr::Float(x) if *x == 0.0)
+            || matches!(expr, Expr::Rational(r) if r.to_f64() == 0.0)
+        {
+            return true;
+        }
+        // Try numeric evaluation for any expression that might be zero
+        if let Some(v) = Self::try_eval_numeric(expr) {
+            return v.abs() < 1e-15;
+        }
+        false
+    }
+
+    /// Check if expression is -1
+    fn is_negative_one(expr: &Expr) -> bool {
+        matches!(expr, Expr::Integer(-1))
+            || matches!(expr, Expr::Neg(e) if matches!(e.as_ref(), Expr::Integer(1)))
+    }
+
+    /// Get the degree of an expression in a variable
+    fn degree_in(expr: &Expr, var: &Symbol) -> i32 {
+        match expr {
+            Expr::Symbol(s) if s == var => 1,
+            Expr::Symbol(_) | Expr::Integer(_) | Expr::Float(_) | Expr::Rational(_) => 0,
+            Expr::Pow(base, exp) if base.as_ref() == &Expr::Symbol(var.clone()) => {
+                match exp.as_ref() {
+                    Expr::Integer(n) => *n as i32,
+                    _ => 0,
+                }
+            }
+            Expr::Mul(factors) => factors.iter().map(|f| Self::degree_in(f, var)).sum(),
+            Expr::Add(terms) => terms.iter().map(|t| Self::degree_in(t, var)).max().unwrap_or(0),
+            Expr::Neg(e) => Self::degree_in(e, var),
+            _ => 0,
+        }
+    }
+
+    /// Get the leading coefficient of a polynomial term
+    fn leading_coefficient(expr: &Expr, var: &Symbol) -> Expr {
+        match expr {
+            Expr::Symbol(s) if s == var => Expr::Integer(1),
+            Expr::Mul(factors) => {
+                let coeffs: Vec<_> = factors
+                    .iter()
+                    .filter(|f| !f.contains_var(var))
+                    .cloned()
+                    .collect();
+                if coeffs.is_empty() {
+                    Expr::Integer(1)
+                } else {
+                    Expr::mul(coeffs)
+                }
+            }
+            Expr::Neg(e) => Expr::neg(Self::leading_coefficient(e, var)),
+            _ if !expr.contains_var(var) => expr.clone(),
+            _ => Expr::Integer(1),
+        }
+    }
+
+    /// Try to determine the sign of an expression
+    fn expr_sign(expr: &Expr) -> Option<crate::expr::Sign> {
+        match expr {
+            Expr::Integer(n) if *n > 0 => Some(crate::expr::Sign::Positive),
+            Expr::Integer(n) if *n < 0 => Some(crate::expr::Sign::Negative),
+            Expr::Float(x) if *x > 0.0 => Some(crate::expr::Sign::Positive),
+            Expr::Float(x) if *x < 0.0 => Some(crate::expr::Sign::Negative),
+            Expr::Neg(e) => Self::expr_sign(e).map(|s| match s {
+                crate::expr::Sign::Positive => crate::expr::Sign::Negative,
+                crate::expr::Sign::Negative => crate::expr::Sign::Positive,
+            }),
+            Expr::Infinity(s) => Some(*s),
+            _ => None,
+        }
+    }
+}
+
 /// Expression simplifier
 pub struct Simplifier;
 
@@ -870,8 +1346,15 @@ impl Simplifier {
             }
         }
 
-        // If any factor is zero, result is zero
-        if flattened.iter().any(|f| f.is_zero()) {
+        // Check for 0 * ∞ (indeterminate) or just zero
+        let has_zero = flattened.iter().any(|f| f.is_zero());
+        let has_infinity = flattened.iter().any(|f| {
+            matches!(f, Expr::Infinity(_)) || matches!(f, Expr::Rational(r) if r.den == 0)
+        });
+        if has_zero && has_infinity {
+            // 0 * ∞ is indeterminate - keep as product for limit handling
+            // Return as-is without simplifying to allow limit detection
+        } else if has_zero {
             return Expr::Integer(0);
         }
 
@@ -995,8 +1478,165 @@ impl Solver {
             return Self::solve_quadratic_with_coeffs(&a, &b, &c);
         }
 
+        // Try numerical root finding for higher-degree polynomials
+        if let Some(roots) = Self::solve_polynomial_numerical(&expr, var) {
+            if !roots.is_empty() {
+                return Ok(roots);
+            }
+        }
+
         // Fallback to isolation
         Self::solve_by_isolation(&expr, var)
+    }
+
+    /// Solve polynomial equations numerically using Newton-Raphson
+    fn solve_polynomial_numerical(expr: &Expr, var: &Symbol) -> Option<Vec<Expr>> {
+        use crate::eval::Evaluator;
+        let evaluator = Evaluator::new();
+
+        // Check if it's a polynomial and get the degree
+        let degree = Self::polynomial_degree(expr, var)?;
+        if degree > 10 {
+            return None; // Too high degree
+        }
+
+        let mut roots: Vec<f64> = Vec::new();
+
+        // Try many starting points to find all roots
+        let mut starting_points: Vec<f64> = vec![
+            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0,
+            0.25, -0.25, 0.75, -0.75, 1.5, -1.5, 2.5, -2.5, 10.0, -10.0, 100.0, -100.0,
+        ];
+        // Add more points based on degree
+        for i in 0..20 {
+            let x = (i as f64 - 10.0) * 0.37; // Irrational spacing
+            starting_points.push(x);
+        }
+
+        for start in &starting_points {
+            if roots.len() >= degree as usize {
+                break;
+            }
+
+            if let Some(root) = Self::newton_raphson(expr, var, *start, &evaluator) {
+                // Verify it's actually a root
+                let check = Simplifier::substitute(expr, var, &Expr::Float(root));
+                if let Ok(result) = evaluator.eval(&check) {
+                    if let Some(val) = Self::expr_to_f64(&result) {
+                        if val.abs() < 1e-6 {
+                            // Check if we already have this root (with tolerance)
+                            let is_duplicate = roots.iter().any(|&r| (r - root).abs() < 1e-6);
+                            if !is_duplicate {
+                                roots.push(root);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if roots.is_empty() {
+            return None;
+        }
+
+        // Convert to expressions, cleaning up near-integers
+        let result: Vec<Expr> = roots.into_iter().map(|r| {
+            if r.abs() < 1e-10 {
+                Expr::Integer(0)
+            } else if (r - r.round()).abs() < 1e-10 {
+                Expr::Integer(r.round() as i64)
+            } else {
+                Expr::Float(r)
+            }
+        }).collect();
+
+        Some(result)
+    }
+
+    /// Newton-Raphson iteration to find a root
+    fn newton_raphson(expr: &Expr, var: &Symbol, start: f64, evaluator: &crate::eval::Evaluator) -> Option<f64> {
+        let deriv = Differentiator::diff(expr, var).ok()?;
+        let deriv = Simplifier::simplify(&deriv);
+
+        let mut x = start;
+        let max_iter = 100;
+        let tolerance = 1e-12;
+
+        for _ in 0..max_iter {
+            let f_x = {
+                let subst = Simplifier::substitute(expr, var, &Expr::Float(x));
+                evaluator.eval(&subst).ok().and_then(|e| Self::expr_to_f64(&e))?
+            };
+
+            if f_x.abs() < tolerance {
+                return Some(x);
+            }
+
+            let fp_x = {
+                let subst = Simplifier::substitute(&deriv, var, &Expr::Float(x));
+                evaluator.eval(&subst).ok().and_then(|e| Self::expr_to_f64(&e))?
+            };
+
+            if fp_x.abs() < 1e-15 {
+                // Derivative too small, Newton's method fails
+                return None;
+            }
+
+            let x_new = x - f_x / fp_x;
+
+            if (x_new - x).abs() < tolerance {
+                return Some(x_new);
+            }
+
+            x = x_new;
+        }
+
+        None
+    }
+
+    /// Get polynomial degree
+    fn polynomial_degree(expr: &Expr, var: &Symbol) -> Option<u32> {
+        match expr {
+            Expr::Symbol(s) if s == var => Some(1),
+            Expr::Integer(_) | Expr::Float(_) | Expr::Rational(_) => Some(0),
+            Expr::Symbol(_) => Some(0),
+            Expr::Pow(base, exp) => {
+                if base.as_ref() == &Expr::Symbol(var.clone()) {
+                    if let Expr::Integer(n) = exp.as_ref() {
+                        if *n >= 0 {
+                            return Some(*n as u32);
+                        }
+                    }
+                }
+                None // Complex power
+            }
+            Expr::Mul(factors) => {
+                let mut total = 0;
+                for f in factors {
+                    total += Self::polynomial_degree(f, var)?;
+                }
+                Some(total)
+            }
+            Expr::Add(terms) => {
+                let mut max = 0;
+                for t in terms {
+                    max = max.max(Self::polynomial_degree(t, var)?);
+                }
+                Some(max)
+            }
+            Expr::Neg(e) => Self::polynomial_degree(e, var),
+            _ => None,
+        }
+    }
+
+    /// Convert Expr to f64 if possible
+    fn expr_to_f64(expr: &Expr) -> Option<f64> {
+        match expr {
+            Expr::Integer(n) => Some(*n as f64),
+            Expr::Float(x) => Some(*x),
+            Expr::Rational(r) => Some(r.to_f64()),
+            _ => None,
+        }
     }
 
     fn classify_polynomial(expr: &Expr, var: &Symbol) -> Option<(u32, Expr, Expr)> {
