@@ -7,6 +7,7 @@ pub mod plot2d;
 pub mod plot3d;
 
 pub use plot2d::{Graph2D, PlotConfig, CURVE_COLORS};
+pub use plot3d::{Graph3D, Plot3DConfig, Camera3D, Viewport3D, Colormap, RenderMode};
 
 use garcalc_cas::Expr;
 use serde::{Deserialize, Serialize};
