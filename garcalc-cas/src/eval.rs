@@ -7,6 +7,7 @@ use std::f64::consts::{E, PI};
 
 use crate::error::{CasError, Result};
 use crate::expr::{Expr, Rational, Sign};
+use crate::symbolic::{Differentiator, Integrator, Simplifier, Solver};
 
 /// Variable bindings for evaluation
 pub type Environment = HashMap<String, Expr>;
@@ -126,9 +127,19 @@ impl Evaluator {
             }
 
             Expr::Func(name, args) => {
-                let evaluated_args: Result<Vec<_>> =
-                    args.iter().map(|a| self.eval(a)).collect();
-                self.call_function(name, &evaluated_args?)
+                // Symbolic functions operate on unevaluated expressions
+                match name.as_str() {
+                    "diff" | "derivative" | "integrate" | "integral" |
+                    "solve" | "simplify" | "expand" | "factor" |
+                    "substitute" | "subs" => {
+                        self.call_function(name, args)
+                    }
+                    _ => {
+                        let evaluated_args: Result<Vec<_>> =
+                            args.iter().map(|a| self.eval(a)).collect();
+                        self.call_function(name, &evaluated_args?)
+                    }
+                }
             }
 
             Expr::Equation(lhs, rhs) => {
@@ -150,17 +161,40 @@ impl Evaluator {
                 Ok(Expr::Matrix(evaluated?))
             }
 
-            // Symbolic operations - keep as-is for now (will implement in later sprints)
-            Expr::Derivative { .. }
-            | Expr::Integral { .. }
-            | Expr::Limit { .. }
+            // Symbolic operations - perform symbolic computation then try to evaluate
+            Expr::Derivative { expr: inner, var, order } => {
+                let result = Differentiator::diff_n(inner, var, *order)?;
+                let simplified = Simplifier::simplify(&result);
+                // Try to evaluate the result
+                if simplified.contains_var(var) {
+                    // Still has variable - return symbolic result
+                    Ok(simplified)
+                } else {
+                    self.eval(&simplified)
+                }
+            }
+
+            Expr::Integral { expr: inner, var, lower, upper } => {
+                if let (Some(l), Some(u)) = (lower, upper) {
+                    // Definite integral - evaluate to number
+                    let result = Integrator::integrate_definite(inner, var, l, u)?;
+                    let simplified = Simplifier::simplify(&result);
+                    self.eval(&simplified)
+                } else {
+                    // Indefinite integral - return symbolic result
+                    let result = Integrator::integrate(inner, var)?;
+                    Ok(Simplifier::simplify(&result))
+                }
+            }
+
+            Expr::Limit { .. }
             | Expr::Sum { .. }
             | Expr::Product { .. } => {
                 if self.exact_mode {
                     Ok(expr.clone())
                 } else {
                     Err(CasError::NotImplemented(
-                        "symbolic operations in numeric mode".to_string(),
+                        "limits/sums/products not yet implemented".to_string(),
                     ))
                 }
             }
@@ -439,6 +473,83 @@ impl Evaluator {
                     Ok(Expr::Integer(lcm(*a, *b)))
                 } else {
                     Err(CasError::Type("lcm requires integers".to_string()))
+                }
+            }
+
+            // Symbolic operations
+            ("diff", 2, _) | ("derivative", 2, _) => {
+                // diff(expr, var)
+                if let Expr::Symbol(var) = &args[1] {
+                    let result = Differentiator::diff(&args[0], var)?;
+                    Ok(Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("diff requires variable as second argument".to_string()))
+                }
+            }
+            ("diff", 3, _) | ("derivative", 3, _) => {
+                // diff(expr, var, order)
+                if let (Expr::Symbol(var), Expr::Integer(n)) = (&args[1], &args[2]) {
+                    let result = Differentiator::diff_n(&args[0], var, *n as u32)?;
+                    Ok(Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("diff requires variable and integer order".to_string()))
+                }
+            }
+
+            ("integrate", 2, _) | ("integral", 2, _) => {
+                // integrate(expr, var)
+                if let Expr::Symbol(var) = &args[1] {
+                    let result = Integrator::integrate(&args[0], var)?;
+                    Ok(Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("integrate requires variable as second argument".to_string()))
+                }
+            }
+            ("integrate", 4, _) | ("integral", 4, _) => {
+                // integrate(expr, var, lower, upper)
+                if let Expr::Symbol(var) = &args[1] {
+                    let result = Integrator::integrate_definite(&args[0], var, &args[2], &args[3])?;
+                    // Try to evaluate the result numerically
+                    self.eval(&Simplifier::simplify(&result))
+                } else {
+                    Err(CasError::Type("integrate requires variable as second argument".to_string()))
+                }
+            }
+
+            ("solve", 2, _) => {
+                // solve(expr, var) or solve(equation, var)
+                if let Expr::Symbol(var) = &args[1] {
+                    let solutions = Solver::solve(&args[0], var)?;
+                    if solutions.len() == 1 {
+                        Ok(solutions.into_iter().next().unwrap())
+                    } else {
+                        Ok(Expr::Vector(solutions))
+                    }
+                } else {
+                    Err(CasError::Type("solve requires variable as second argument".to_string()))
+                }
+            }
+
+            ("simplify", 1, _) => {
+                Ok(Simplifier::simplify(&args[0]))
+            }
+
+            ("expand", 1, _) => {
+                Ok(Simplifier::simplify(&Simplifier::expand(&args[0])))
+            }
+
+            ("factor", 1, _) => {
+                // Basic factoring - just return simplified for now
+                // Full factoring is complex, can add later
+                Ok(Simplifier::simplify(&args[0]))
+            }
+
+            ("substitute", 3, _) | ("subs", 3, _) => {
+                // substitute(expr, var, replacement)
+                if let Expr::Symbol(var) = &args[1] {
+                    Ok(Simplifier::simplify(&Simplifier::substitute(&args[0], var, &args[2])))
+                } else {
+                    Err(CasError::Type("substitute requires variable as second argument".to_string()))
                 }
             }
 
