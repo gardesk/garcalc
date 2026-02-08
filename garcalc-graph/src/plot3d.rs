@@ -46,7 +46,7 @@ impl Camera3D {
 
     /// Zoom by a factor
     pub fn zoom(&mut self, factor: f64) {
-        self.distance = (self.distance / factor).clamp(2.0, 500.0);
+        self.distance = (self.distance / factor).clamp(0.5, 2000.0);
     }
 
     /// Get camera position in world coordinates
