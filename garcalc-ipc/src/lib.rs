@@ -31,6 +31,7 @@ pub enum Command {
 pub enum Mode {
     Calculator,
     Graph,
+    Graph3D,
     Geometry,
     Spreadsheet,
     Notes,
