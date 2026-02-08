@@ -1,0 +1,22 @@
+[package]
+name = "garcalc-math"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Math rendering and structured input for garcalc"
+
+[dependencies]
+# Internal crates
+garcalc-cas = { workspace = true }
+gartk-core = { workspace = true }
+
+# Cairo for rendering
+cairo-rs = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Serialization (for history persistence)
+serde = { workspace = true }

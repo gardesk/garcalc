@@ -5,6 +5,7 @@ members = [
     "garcalcctl",
     "garcalc-ipc",
     "garcalc-cas",
+    "garcalc-math",
     "garcas",
     "garcalc-graph",
     "garcalc-geometry",
@@ -61,6 +62,7 @@ cairo-rs = { version = "0.20", features = ["xcb"] }
 # Internal crates
 garcalc-ipc = { path = "garcalc-ipc" }
 garcalc-cas = { path = "garcalc-cas" }
+garcalc-math = { path = "garcalc-math" }
 garcalc-graph = { path = "garcalc-graph" }
 garcalc-geometry = { path = "garcalc-geometry" }
 garcalc-doc = { path = "garcalc-doc" }
