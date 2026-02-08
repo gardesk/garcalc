@@ -1,0 +1,18 @@
+[package]
+name = "garcalcctl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Control utility for garcalc"
+
+[[bin]]
+name = "garcalcctl"
+path = "src/main.rs"
+
+[dependencies]
+garcalc-ipc = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
