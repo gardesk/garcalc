@@ -11,8 +11,10 @@ pub mod expr;
 pub mod parser;
 pub mod eval;
 pub mod error;
+pub mod symbolic;
 
 pub use expr::{Expr, Symbol, Rational};
 pub use parser::Parser;
 pub use eval::Evaluator;
 pub use error::{CasError, Result};
+pub use symbolic::{Differentiator, Integrator, Simplifier, Solver};

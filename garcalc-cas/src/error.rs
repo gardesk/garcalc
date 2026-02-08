@@ -26,6 +26,9 @@ pub enum CasError {
 
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("Evaluation error: {0}")]
+    EvaluationError(String),
 }
 
 pub type Result<T> = std::result::Result<T, CasError>;
