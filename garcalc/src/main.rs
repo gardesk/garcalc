@@ -25,7 +25,7 @@ struct Args {
     #[arg(short, long)]
     daemon: bool,
 
-    /// Initial mode (calculator, graph, geometry, spreadsheet, notes)
+    /// Initial mode (calculator, graph, graph3d, geometry, spreadsheet, notes)
     #[arg(short, long, default_value = "calculator")]
     mode: String,
 
@@ -76,7 +76,8 @@ fn run_daemon() -> Result<()> {
 fn run_calculator(args: &Args) -> Result<()> {
     let mode = match args.mode.to_lowercase().as_str() {
         "calc" | "calculator" => garcalc_ipc::Mode::Calculator,
-        "graph" | "graphing" => garcalc_ipc::Mode::Graph,
+        "graph" | "graphing" | "2d" => garcalc_ipc::Mode::Graph,
+        "graph3d" | "3d" | "surface" => garcalc_ipc::Mode::Graph3D,
         "geo" | "geometry" => garcalc_ipc::Mode::Geometry,
         "sheet" | "spreadsheet" => garcalc_ipc::Mode::Spreadsheet,
         "notes" | "note" => garcalc_ipc::Mode::Notes,

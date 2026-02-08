@@ -1,7 +1,7 @@
 //! UI rendering using gartk-render
 
 use anyhow::Result;
-use garcalc_graph::Graph2D;
+use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
 use gartk_core::{Color, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -61,12 +61,16 @@ impl CalculatorUI {
         history: &[HistoryEntry],
         mode: Mode,
         graph: &Graph2D,
+        graph3d: &Graph3D,
     ) -> Result<()> {
         let size = self.renderer.size();
 
         if mode == Mode::Graph {
-            // Graph mode: render graph with overlay input
+            // Graph mode: render 2D graph with overlay input
             self.render_graph_mode(input, cursor, history, graph)?;
+        } else if mode == Mode::Graph3D {
+            // Graph3D mode: render 3D surface with overlay input
+            self.render_graph3d_mode(input, cursor, history, graph3d)?;
         } else {
             // Calculator mode: standard layout
             // Clear background with darker color
@@ -173,10 +177,92 @@ impl CalculatorUI {
         Ok(())
     }
 
+    fn render_graph3d_mode(
+        &mut self,
+        input: &str,
+        cursor: usize,
+        history: &[HistoryEntry],
+        graph3d: &Graph3D,
+    ) -> Result<()> {
+        let size = self.renderer.size();
+        let width = size.width;
+        let height = size.height;
+
+        // Get Cairo context from renderer surface
+        let ctx = self.renderer.surface().context()?;
+
+        // Render the 3D graph (fills entire area)
+        graph3d.render(&ctx, width, height);
+
+        // Mode indicator (overlay)
+        self.draw_mode_indicator(Mode::Graph3D)?;
+
+        // Input area at bottom (overlay with semi-transparent background)
+        let input_height = 50;
+        let input_y = height as i32 - input_height - 10;
+
+        // Semi-transparent background for input area
+        let input_bg = Rect::new(10, input_y - 5, width - 20, input_height as u32 + 10);
+        self.renderer.fill_rounded_rect(
+            input_bg,
+            8.0,
+            self.theme.background.with_alpha(0.85),
+        )?;
+
+        // Draw input
+        self.draw_input(input, cursor, input_y)?;
+
+        // Show most recent history entry as overlay (if any)
+        if let Some(entry) = history.last() {
+            let result_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(12.0)
+                .color(self.theme.foreground.with_alpha(0.8));
+
+            let text = if let Some(ref error) = entry.error {
+                format!("Error: {error}")
+            } else {
+                entry.result.clone()
+            };
+
+            // Background for result
+            let result_bg = Rect::new(10, input_y - 30, width - 20, 22);
+            self.renderer.fill_rounded_rect(
+                result_bg,
+                4.0,
+                self.theme.background.with_alpha(0.75),
+            )?;
+
+            self.renderer.text(&text, 20.0, (input_y - 26) as f64, &result_style)?;
+        }
+
+        // Show surface count
+        let surface_count = graph3d.surfaces.len();
+        if surface_count > 0 {
+            let func_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(11.0)
+                .color(self.theme.foreground.with_alpha(0.7));
+
+            let func_text = format!("{} surface{}", surface_count, if surface_count == 1 { "" } else { "s" });
+            self.renderer.text(&func_text, (width - 80) as f64, 12.0, &func_style)?;
+        }
+
+        // Help text
+        let help_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.5));
+        self.renderer.text("Scroll: zoom | Drag: rotate | Ctrl+R: reset", 55.0, 12.0, &help_style)?;
+
+        Ok(())
+    }
+
     fn draw_mode_indicator(&mut self, mode: Mode) -> Result<()> {
         let mode_text = match mode {
             Mode::Calculator => "CALC",
             Mode::Graph => "GRAPH",
+            Mode::Graph3D => "3D",
             Mode::Geometry => "GEO",
             Mode::Spreadsheet => "SHEET",
             Mode::Notes => "NOTES",

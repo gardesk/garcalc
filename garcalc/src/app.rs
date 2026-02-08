@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use garcalc_cas::{parser, Evaluator};
-use garcalc_graph::Graph2D;
+use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
 use gartk_core::{InputEvent, Key, MouseButton};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
@@ -26,6 +26,8 @@ pub struct App {
     evaluator: Evaluator,
     /// 2D graph state
     graph: Graph2D,
+    /// 3D graph state
+    graph3d: Graph3D,
     /// Current mode
     mode: Mode,
     /// Input text
@@ -98,6 +100,7 @@ impl App {
             ui,
             evaluator: Evaluator::new(),
             graph: Graph2D::new(),
+            graph3d: Graph3D::new(),
             mode,
             input: String::new(),
             cursor: 0,
@@ -125,9 +128,9 @@ impl App {
                     ev.request_redraw();
                 }
                 InputEvent::MousePress(mouse_ev) => {
+                    let x = mouse_ev.position.x as f64;
+                    let y = mouse_ev.position.y as f64;
                     if self.mode == Mode::Graph {
-                        let x = mouse_ev.position.x as f64;
-                        let y = mouse_ev.position.y as f64;
                         if mouse_ev.button == Some(MouseButton::Left) {
                             // Left click - start drag for pan
                             self.drag_start = Some((x, y));
@@ -139,17 +142,24 @@ impl App {
                             }
                             ev.request_redraw();
                         }
+                    } else if self.mode == Mode::Graph3D {
+                        if mouse_ev.button == Some(MouseButton::Left) {
+                            // Left click - start drag for rotation
+                            self.drag_start = Some((x, y));
+                        }
                     }
                 }
                 InputEvent::MouseRelease(mouse_ev) => {
-                    if self.mode == Mode::Graph && mouse_ev.button == Some(MouseButton::Left) {
+                    if (self.mode == Mode::Graph || self.mode == Mode::Graph3D)
+                        && mouse_ev.button == Some(MouseButton::Left)
+                    {
                         self.drag_start = None;
                     }
                 }
                 InputEvent::MouseMove(mouse_ev) => {
+                    let x = mouse_ev.position.x as f64;
+                    let y = mouse_ev.position.y as f64;
                     if self.mode == Mode::Graph {
-                        let x = mouse_ev.position.x as f64;
-                        let y = mouse_ev.position.y as f64;
                         if let Some((start_x, start_y)) = self.drag_start {
                             let (width, height) = self.ui.size();
                             let dx = x - start_x;
@@ -161,15 +171,27 @@ impl App {
                             self.graph.set_trace_pos(x, y);
                             ev.request_redraw();
                         }
+                    } else if self.mode == Mode::Graph3D {
+                        if let Some((start_x, start_y)) = self.drag_start {
+                            let dx = x - start_x;
+                            let dy = y - start_y;
+                            // Rotate camera: horizontal drag = azimuth, vertical = elevation
+                            self.graph3d.camera.rotate(dx * 0.01, -dy * 0.01);
+                            self.drag_start = Some((x, y));
+                            ev.request_redraw();
+                        }
                     }
                 }
                 InputEvent::Scroll(scroll_ev) => {
+                    let factor = if scroll_ev.delta_y > 0 { 1.1 } else { 0.9 };
                     if self.mode == Mode::Graph {
                         let (width, height) = self.ui.size();
-                        let factor = if scroll_ev.delta_y > 0 { 1.1 } else { 0.9 };
                         let x = scroll_ev.position.x as f64;
                         let y = scroll_ev.position.y as f64;
                         self.graph.zoom(factor, x, y, width, height);
+                        ev.request_redraw();
+                    } else if self.mode == Mode::Graph3D {
+                        self.graph3d.camera.zoom(factor);
                         ev.request_redraw();
                     }
                 }
@@ -229,7 +251,10 @@ impl App {
             Key::F2 => {
                 self.mode = Mode::Graph;
             }
-            // Graph-specific keys
+            Key::F3 => {
+                self.mode = Mode::Graph3D;
+            }
+            // Graph-specific keys (2D)
             Key::Char('r') if ctrl && self.mode == Mode::Graph => {
                 // Reset viewport
                 self.graph.reset_viewport();
@@ -241,6 +266,15 @@ impl App {
             Key::Char('t') if ctrl && self.mode == Mode::Graph => {
                 // Toggle trace
                 self.graph.trace_enabled = !self.graph.trace_enabled;
+            }
+            // Graph3D-specific keys
+            Key::Char('r') if ctrl && self.mode == Mode::Graph3D => {
+                // Reset camera
+                self.graph3d.reset_camera();
+            }
+            Key::Char('c') if ctrl && self.mode == Mode::Graph3D => {
+                // Clear surfaces
+                self.graph3d.clear_surfaces();
             }
             Key::Backspace => {
                 if self.cursor > 0 {
@@ -340,7 +374,7 @@ impl App {
 
         // In graph mode, add functions to the graph
         if self.mode == Mode::Graph {
-            // Try to parse as a function to graph
+            // Try to parse as a function to graph (2D: y = f(x))
             // Support formats: "y = expr", "expr" (implicit y=)
             let expr_str = if let Some(rest) = input.strip_prefix("y=").or_else(|| input.strip_prefix("y =")) {
                 rest.trim()
@@ -354,6 +388,34 @@ impl App {
                     let entry = HistoryEntry {
                         input: input.clone(),
                         result: format!("Added function {}", self.graph.functions.len()),
+                        error: None,
+                    };
+                    self.history.push(entry);
+                }
+                Err(e) => {
+                    let entry = HistoryEntry {
+                        input: input.clone(),
+                        result: String::new(),
+                        error: Some(e.to_string()),
+                    };
+                    self.history.push(entry);
+                }
+            }
+        } else if self.mode == Mode::Graph3D {
+            // Try to parse as a surface (3D: z = f(x, y))
+            // Support formats: "z = expr", "expr" (implicit z=)
+            let expr_str = if let Some(rest) = input.strip_prefix("z=").or_else(|| input.strip_prefix("z =")) {
+                rest.trim()
+            } else {
+                input.trim()
+            };
+
+            match parser::parse(expr_str) {
+                Ok(expr) => {
+                    self.graph3d.add_explicit(expr);
+                    let entry = HistoryEntry {
+                        input: input.clone(),
+                        result: format!("Added surface {}", self.graph3d.surfaces.len()),
                         error: None,
                     };
                     self.history.push(entry);
@@ -391,7 +453,7 @@ impl App {
     }
 
     fn render(&mut self) -> Result<()> {
-        self.ui.render(&self.input, self.cursor, &self.history, self.mode, &self.graph)?;
+        self.ui.render(&self.input, self.cursor, &self.history, self.mode, &self.graph, &self.graph3d)?;
         Ok(())
     }
 }
