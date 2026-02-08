@@ -1,0 +1,12 @@
+[package]
+name = "garcalc-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "2D/3D graphing engine for garcalc"
+
+[dependencies]
+garcalc-cas = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

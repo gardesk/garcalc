@@ -1,0 +1,15 @@
+[package]
+name = "garcalc-doc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Document format for garcalc (spreadsheet, notes)"
+
+[dependencies]
+garcalc-cas = { workspace = true }
+garcalc-graph = { workspace = true }
+garcalc-geometry = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
