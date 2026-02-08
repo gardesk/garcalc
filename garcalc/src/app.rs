@@ -183,14 +183,16 @@ impl App {
                     }
                 }
                 InputEvent::Scroll(scroll_ev) => {
-                    let factor = if scroll_ev.delta_y > 0 { 1.1 } else { 0.9 };
                     if self.mode == Mode::Graph {
+                        let factor = if scroll_ev.delta_y > 0 { 1.1 } else { 0.9 };
                         let (width, height) = self.ui.size();
                         let x = scroll_ev.position.x as f64;
                         let y = scroll_ev.position.y as f64;
                         self.graph.zoom(factor, x, y, width, height);
                         ev.request_redraw();
                     } else if self.mode == Mode::Graph3D {
+                        // More aggressive zoom for 3D (25% per scroll)
+                        let factor = if scroll_ev.delta_y > 0 { 1.25 } else { 0.8 };
                         self.graph3d.camera.zoom(factor);
                         ev.request_redraw();
                     }
