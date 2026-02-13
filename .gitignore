@@ -1,6 +1,7 @@
 /target
 docs/
 CLAUDE.md
+AGENTS.md
 .fackr/
 .vscode/
 .claude/
