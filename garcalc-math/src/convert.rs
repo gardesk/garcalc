@@ -4,8 +4,8 @@
 //! - MathBox -> Expr for evaluation
 //! - Expr -> MathBox for result display
 
-use crate::mathbox::{MathBox, Operator, LimitDirection as MathLimitDirection};
-use garcalc_cas::expr::{Expr, Rational, Symbol, LimitDirection, Sign};
+use crate::mathbox::{LimitDirection as MathLimitDirection, MathBox, Operator};
+use garcalc_cas::expr::{Expr, LimitDirection, Rational, Sign, Symbol};
 use thiserror::Error;
 
 /// Errors that can occur during conversion
@@ -46,7 +46,9 @@ pub fn to_expr(mathbox: &MathBox) -> Result<Expr, ConvertError> {
 
         MathBox::Subscript { base, sub } => {
             // Subscripted variables become a combined symbol
-            if let (MathBox::Symbol(b), MathBox::Number(s) | MathBox::Symbol(s)) = (base.as_ref(), sub.as_ref()) {
+            if let (MathBox::Symbol(b), MathBox::Number(s) | MathBox::Symbol(s)) =
+                (base.as_ref(), sub.as_ref())
+            {
                 Ok(Expr::Symbol(Symbol::new(format!("{}_{}", b, s))))
             } else {
                 let base_expr = to_expr(base)?;
@@ -81,7 +83,12 @@ pub fn to_expr(mathbox: &MathBox) -> Result<Expr, ConvertError> {
 
         MathBox::Parens(inner) => to_expr(inner),
 
-        MathBox::Integral { lower, upper, body, var } => {
+        MathBox::Integral {
+            lower,
+            upper,
+            body,
+            var,
+        } => {
             let body_expr = to_expr(body)?;
             let var_sym = Symbol::new(extract_symbol_str(var)?);
 
@@ -112,7 +119,12 @@ pub fn to_expr(mathbox: &MathBox) -> Result<Expr, ConvertError> {
             })
         }
 
-        MathBox::Limit { var, to, direction, body } => {
+        MathBox::Limit {
+            var,
+            to,
+            direction,
+            body,
+        } => {
             let body_expr = to_expr(body)?;
             let var_sym = Symbol::new(extract_symbol_str(var)?);
             let point_expr = to_expr(to)?;
@@ -130,7 +142,12 @@ pub fn to_expr(mathbox: &MathBox) -> Result<Expr, ConvertError> {
             })
         }
 
-        MathBox::Sum { var, lower, upper, body } => {
+        MathBox::Sum {
+            var,
+            lower,
+            upper,
+            body,
+        } => {
             let var_sym = Symbol::new(extract_symbol_str(var)?);
             let lower_expr = to_expr(lower)?;
             let upper_expr = to_expr(upper)?;
@@ -144,7 +161,12 @@ pub fn to_expr(mathbox: &MathBox) -> Result<Expr, ConvertError> {
             })
         }
 
-        MathBox::Product { var, lower, upper, body } => {
+        MathBox::Product {
+            var,
+            lower,
+            upper,
+            body,
+        } => {
             let var_sym = Symbol::new(extract_symbol_str(var)?);
             let lower_expr = to_expr(lower)?;
             let upper_expr = to_expr(upper)?;
@@ -249,22 +271,35 @@ pub fn from_expr(expr: &Expr) -> MathBox {
 
         Expr::Mul(factors) => {
             // Check for division pattern (x * y^-1)
-            let (numerator, denominator): (Vec<_>, Vec<_>) = factors.iter().partition(|f| !is_reciprocal(f));
+            let (numerator, denominator): (Vec<_>, Vec<_>) =
+                factors.iter().partition(|f| !is_reciprocal(f));
+
+            let mut numerator_factors: Vec<Expr> = numerator.into_iter().cloned().collect();
+            numerator_factors.retain(|f| !is_multiplicative_identity(f));
 
             if !denominator.is_empty() {
-                let num_box = if numerator.is_empty() {
+                let den_factors: Vec<Expr> = denominator
+                    .iter()
+                    .map(|f| extract_base_of_reciprocal(f))
+                    .filter(|f| !is_multiplicative_identity(f))
+                    .collect();
+
+                let num_box = if numerator_factors.is_empty() {
                     MathBox::Number("1".to_string())
-                } else if numerator.len() == 1 {
-                    from_expr(numerator[0])
+                } else if numerator_factors.len() == 1 {
+                    render_mul_factor(&numerator_factors[0])
                 } else {
-                    from_expr(&Expr::Mul(numerator.into_iter().cloned().collect()))
+                    from_mul_factors(&numerator_factors)
                 };
 
-                let den_factors: Vec<Expr> = denominator.iter().map(|f| extract_base_of_reciprocal(f)).collect();
+                if den_factors.is_empty() {
+                    return num_box;
+                }
+
                 let den_box = if den_factors.len() == 1 {
-                    from_expr(&den_factors[0])
+                    render_mul_factor(&den_factors[0])
                 } else {
-                    from_expr(&Expr::Mul(den_factors))
+                    from_mul_factors(&den_factors)
                 };
 
                 return MathBox::Fraction {
@@ -274,17 +309,12 @@ pub fn from_expr(expr: &Expr) -> MathBox {
             }
 
             // Normal multiplication
-            let mut items = Vec::new();
-            for (i, factor) in factors.iter().enumerate() {
-                if i > 0 {
-                    items.push(MathBox::Operator(Operator::Mul));
-                }
-                items.push(from_expr(factor));
-            }
-            if items.len() == 1 {
-                items.pop().unwrap()
+            if numerator_factors.is_empty() {
+                MathBox::Number("1".to_string())
+            } else if numerator_factors.len() == 1 {
+                render_mul_factor(&numerator_factors[0])
             } else {
-                MathBox::Row(items)
+                from_mul_factors(&numerator_factors)
             }
         }
 
@@ -310,14 +340,21 @@ pub fn from_expr(expr: &Expr) -> MathBox {
             }
         }
 
-        Expr::Neg(inner) => {
-            MathBox::Row(vec![
-                MathBox::Operator(Operator::Sub),
-                from_expr(inner),
-            ])
-        }
+        Expr::Neg(inner) => MathBox::Row(vec![MathBox::Operator(Operator::Sub), from_expr(inner)]),
 
         Expr::Func(name, args) => {
+            if name == "factorial" && args.len() == 1 {
+                let arg_expr = &args[0];
+                let arg_box = from_expr(arg_expr);
+                let formatted_arg = if factorial_arg_needs_parens(arg_expr) {
+                    MathBox::Parens(Box::new(arg_box))
+                } else {
+                    arg_box
+                };
+
+                return MathBox::Row(vec![formatted_arg, MathBox::Symbol("!".to_string())]);
+            }
+
             let arg_boxes: Vec<MathBox> = args.iter().map(from_expr).collect();
 
             // Special functions get special rendering
@@ -332,52 +369,62 @@ pub fn from_expr(expr: &Expr) -> MathBox {
             }
         }
 
-        Expr::Derivative { expr, var, order } => {
-            MathBox::Derivative {
-                order: *order,
-                var: Box::new(MathBox::Symbol(var.0.clone())),
-                body: Box::new(from_expr(expr)),
-            }
-        }
+        Expr::Derivative { expr, var, order } => MathBox::Derivative {
+            order: *order,
+            var: Box::new(MathBox::Symbol(var.0.clone())),
+            body: Box::new(from_expr(expr)),
+        },
 
-        Expr::Integral { expr, var, lower, upper } => {
-            MathBox::Integral {
-                lower: lower.as_ref().map(|lo| Box::new(from_expr(lo))),
-                upper: upper.as_ref().map(|hi| Box::new(from_expr(hi))),
-                body: Box::new(from_expr(expr)),
-                var: Box::new(MathBox::Symbol(var.0.clone())),
-            }
-        }
+        Expr::Integral {
+            expr,
+            var,
+            lower,
+            upper,
+        } => MathBox::Integral {
+            lower: lower.as_ref().map(|lo| Box::new(from_expr(lo))),
+            upper: upper.as_ref().map(|hi| Box::new(from_expr(hi))),
+            body: Box::new(from_expr(expr)),
+            var: Box::new(MathBox::Symbol(var.0.clone())),
+        },
 
-        Expr::Limit { expr, var, point, direction } => {
-            MathBox::Limit {
-                var: Box::new(MathBox::Symbol(var.0.clone())),
-                to: Box::new(from_expr(point)),
-                direction: direction.map(|d| match d {
-                    LimitDirection::Left => MathLimitDirection::FromLeft,
-                    LimitDirection::Right => MathLimitDirection::FromRight,
-                }),
-                body: Box::new(from_expr(expr)),
-            }
-        }
+        Expr::Limit {
+            expr,
+            var,
+            point,
+            direction,
+        } => MathBox::Limit {
+            var: Box::new(MathBox::Symbol(var.0.clone())),
+            to: Box::new(from_expr(point)),
+            direction: direction.map(|d| match d {
+                LimitDirection::Left => MathLimitDirection::FromLeft,
+                LimitDirection::Right => MathLimitDirection::FromRight,
+            }),
+            body: Box::new(from_expr(expr)),
+        },
 
-        Expr::Sum { expr, var, lower, upper } => {
-            MathBox::Sum {
-                var: Box::new(MathBox::Symbol(var.0.clone())),
-                lower: Box::new(from_expr(lower)),
-                upper: Box::new(from_expr(upper)),
-                body: Box::new(from_expr(expr)),
-            }
-        }
+        Expr::Sum {
+            expr,
+            var,
+            lower,
+            upper,
+        } => MathBox::Sum {
+            var: Box::new(MathBox::Symbol(var.0.clone())),
+            lower: Box::new(from_expr(lower)),
+            upper: Box::new(from_expr(upper)),
+            body: Box::new(from_expr(expr)),
+        },
 
-        Expr::Product { expr, var, lower, upper } => {
-            MathBox::Product {
-                var: Box::new(MathBox::Symbol(var.0.clone())),
-                lower: Box::new(from_expr(lower)),
-                upper: Box::new(from_expr(upper)),
-                body: Box::new(from_expr(expr)),
-            }
-        }
+        Expr::Product {
+            expr,
+            var,
+            lower,
+            upper,
+        } => MathBox::Product {
+            var: Box::new(MathBox::Symbol(var.0.clone())),
+            lower: Box::new(from_expr(lower)),
+            upper: Box::new(from_expr(upper)),
+            body: Box::new(from_expr(expr)),
+        },
 
         Expr::Matrix(rows) => {
             let box_rows: Vec<Vec<MathBox>> = rows
@@ -387,29 +434,27 @@ pub fn from_expr(expr: &Expr) -> MathBox {
             MathBox::Matrix { rows: box_rows }
         }
 
-        Expr::Equation(lhs, rhs) => {
-            MathBox::Row(vec![
-                from_expr(lhs),
-                MathBox::Operator(Operator::Eq),
-                from_expr(rhs),
-            ])
-        }
+        Expr::Equation(lhs, rhs) => MathBox::Row(vec![
+            from_expr(lhs),
+            MathBox::Operator(Operator::Eq),
+            from_expr(rhs),
+        ]),
 
         Expr::Undefined => MathBox::Symbol("undefined".to_string()),
-        Expr::Infinity(sign) => {
-            match sign {
-                Sign::Positive => MathBox::Symbol("∞".to_string()),
-                Sign::Negative => MathBox::Row(vec![
-                    MathBox::Operator(Operator::Sub),
-                    MathBox::Symbol("∞".to_string()),
-                ]),
-            }
-        }
+        Expr::Infinity(sign) => match sign {
+            Sign::Positive => MathBox::Symbol("∞".to_string()),
+            Sign::Negative => MathBox::Row(vec![
+                MathBox::Operator(Operator::Sub),
+                MathBox::Symbol("∞".to_string()),
+            ]),
+        },
 
         Expr::Vector(elems) => {
             // Display vector as a row matrix
             let box_row: Vec<MathBox> = elems.iter().map(from_expr).collect();
-            MathBox::Matrix { rows: vec![box_row] }
+            MathBox::Matrix {
+                rows: vec![box_row],
+            }
         }
 
         Expr::Inequality { lhs, op, rhs } => {
@@ -421,11 +466,7 @@ pub fn from_expr(expr: &Expr) -> MathBox {
                 InequalityOp::Ge => MathBox::Operator(Operator::Ge),
                 InequalityOp::Ne => MathBox::Operator(Operator::Ne),
             };
-            MathBox::Row(vec![
-                from_expr(lhs),
-                op_box,
-                from_expr(rhs),
-            ])
+            MathBox::Row(vec![from_expr(lhs), op_box, from_expr(rhs)])
         }
     }
 }
@@ -470,6 +511,14 @@ fn convert_row(items: &[MathBox]) -> Result<Expr, ConvertError> {
             MathBox::Operator(op) => {
                 operators.push(*op);
             }
+            MathBox::Symbol(s) if s == "!" => {
+                let Some(last) = operands.pop() else {
+                    return Err(ConvertError::MissingField(
+                        "factorial operand before '!'".to_string(),
+                    ));
+                };
+                operands.push(Expr::Func("factorial".to_string(), vec![last]));
+            }
             other => {
                 operands.push(to_expr(other)?);
             }
@@ -507,7 +556,10 @@ fn format_float(f: f64) -> String {
     if f == f.trunc() && f.abs() < 1e15 {
         format!("{:.0}", f)
     } else {
-        format!("{:.10}", f).trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{:.10}", f)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -542,6 +594,53 @@ fn extract_base_of_reciprocal(expr: &Expr) -> Expr {
     }
 }
 
+fn is_multiplicative_identity(expr: &Expr) -> bool {
+    match expr {
+        Expr::Integer(1) => true,
+        Expr::Rational(r) if r.den != 0 && r.num == r.den => true,
+        Expr::Float(f) if *f == 1.0 => true,
+        _ => false,
+    }
+}
+
+fn mul_factor_needs_parens(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Add(_) | Expr::Equation(_, _) | Expr::Inequality { .. }
+    )
+}
+
+fn render_mul_factor(expr: &Expr) -> MathBox {
+    let rendered = from_expr(expr);
+    if mul_factor_needs_parens(expr) {
+        MathBox::Parens(Box::new(rendered))
+    } else {
+        rendered
+    }
+}
+
+fn from_mul_factors(factors: &[Expr]) -> MathBox {
+    let mut items = Vec::new();
+    for (i, factor) in factors.iter().enumerate() {
+        if i > 0 {
+            items.push(MathBox::Operator(Operator::Mul));
+        }
+        items.push(render_mul_factor(factor));
+    }
+    if items.len() == 1 {
+        items.pop().unwrap()
+    } else {
+        MathBox::Row(items)
+    }
+}
+
+fn factorial_arg_needs_parens(arg: &Expr) -> bool {
+    !matches!(
+        arg,
+        Expr::Integer(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Symbol(_) | Expr::Func(_, _)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,5 +673,118 @@ mod tests {
         let mb = from_expr(&expr);
 
         assert!(matches!(mb, MathBox::Fraction { .. }));
+    }
+
+    #[test]
+    fn test_factorial_renders_as_postfix_bang() {
+        let expr = Expr::Func(
+            "factorial".to_string(),
+            vec![Expr::Symbol(Symbol::new("n"))],
+        );
+        let mb = from_expr(&expr);
+
+        if let MathBox::Row(items) = mb {
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[0], MathBox::Symbol(s) if s == "n"));
+            assert!(matches!(&items[1], MathBox::Symbol(s) if s == "!"));
+        } else {
+            panic!("expected row for factorial rendering");
+        }
+    }
+
+    #[test]
+    fn test_factorial_wraps_complex_arg_in_parens() {
+        let expr = Expr::Func(
+            "factorial".to_string(),
+            vec![Expr::Add(vec![
+                Expr::Symbol(Symbol::new("n")),
+                Expr::Integer(1),
+            ])],
+        );
+        let mb = from_expr(&expr);
+
+        if let MathBox::Row(items) = mb {
+            assert!(matches!(&items[0], MathBox::Parens(_)));
+            assert!(matches!(&items[1], MathBox::Symbol(s) if s == "!"));
+        } else {
+            panic!("expected row for factorial rendering");
+        }
+    }
+
+    #[test]
+    fn test_row_postfix_factorial_converts_to_expr() {
+        let mb = MathBox::Row(vec![
+            MathBox::Symbol("n".to_string()),
+            MathBox::Symbol("!".to_string()),
+        ]);
+
+        let expr = to_expr(&mb).unwrap();
+        assert_eq!(
+            expr,
+            Expr::Func(
+                "factorial".to_string(),
+                vec![Expr::Symbol(Symbol::new("n"))]
+            )
+        );
+    }
+
+    #[test]
+    fn test_from_expr_fraction_drops_unity_factor_in_numerator() {
+        let expr = Expr::Mul(vec![
+            Expr::Integer(1),
+            Expr::Symbol(Symbol::new("n")),
+            Expr::Pow(Box::new(Expr::Integer(2)), Box::new(Expr::Integer(-1))),
+        ]);
+
+        let mb = from_expr(&expr);
+        if let MathBox::Fraction { num, den } = mb {
+            assert!(!matches!(num.as_ref(), MathBox::Number(s) if s == "1"));
+            assert!(matches!(den.as_ref(), MathBox::Number(s) if s == "2"));
+        } else {
+            panic!("expected fraction");
+        }
+    }
+
+    #[test]
+    fn test_from_expr_mul_wraps_additive_factor_with_parens() {
+        let expr = Expr::Mul(vec![
+            Expr::Symbol(Symbol::new("n")),
+            Expr::Add(vec![Expr::Integer(1), Expr::Symbol(Symbol::new("n"))]),
+        ]);
+
+        let mb = from_expr(&expr);
+        if let MathBox::Row(items) = mb {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(&items[0], MathBox::Symbol(s) if s == "n"));
+            assert!(matches!(&items[1], MathBox::Operator(Operator::Mul)));
+            assert!(matches!(&items[2], MathBox::Parens(_)));
+        } else {
+            panic!("expected multiplication row");
+        }
+    }
+
+    #[test]
+    fn test_from_expr_fraction_numerator_hides_one_and_wraps_additive_factor() {
+        let expr = Expr::Mul(vec![
+            Expr::Integer(1),
+            Expr::Symbol(Symbol::new("n")),
+            Expr::Add(vec![Expr::Integer(1), Expr::Symbol(Symbol::new("n"))]),
+            Expr::Pow(Box::new(Expr::Integer(2)), Box::new(Expr::Integer(-1))),
+        ]);
+
+        let mb = from_expr(&expr);
+        if let MathBox::Fraction { num, den } = mb {
+            assert!(matches!(den.as_ref(), MathBox::Number(s) if s == "2"));
+            if let MathBox::Row(items) = num.as_ref() {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[0], MathBox::Symbol(s) if s == "n"));
+                assert!(matches!(&items[1], MathBox::Operator(Operator::Mul)));
+                assert!(matches!(&items[2], MathBox::Parens(_)));
+            } else {
+                panic!("expected row in fraction numerator");
+            }
+        } else {
+            panic!("expected fraction");
+        }
     }
 }

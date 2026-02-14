@@ -43,10 +43,7 @@ pub enum MathBox {
     },
 
     /// Function call with arguments
-    Func {
-        name: String,
-        args: Vec<MathBox>,
-    },
+    Func { name: String, args: Vec<MathBox> },
 
     /// Absolute value
     Abs(Box<MathBox>),
@@ -113,9 +110,7 @@ pub enum MathBox {
     },
 
     /// Matrix with rows of cells
-    Matrix {
-        rows: Vec<Vec<MathBox>>,
-    },
+    Matrix { rows: Vec<Vec<MathBox>> },
 
     /// Horizontal sequence of elements (e.g., 2 + 3 × x)
     Row(Vec<MathBox>),
@@ -127,17 +122,17 @@ pub enum MathBox {
 /// Mathematical operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operator {
-    Add,      // +
-    Sub,      // -
-    Mul,      // × or *
-    Div,      // ÷ (for inline division, not fraction)
-    Eq,       // =
-    Lt,       // <
-    Gt,       // >
-    Le,       // ≤
-    Ge,       // ≥
-    Ne,       // ≠
-    Comma,    // ,
+    Add,   // +
+    Sub,   // -
+    Mul,   // × or *
+    Div,   // ÷ (for inline division, not fraction)
+    Eq,    // =
+    Lt,    // <
+    Gt,    // >
+    Le,    // ≤
+    Ge,    // ≥
+    Ne,    // ≠
+    Comma, // ,
 }
 
 impl Operator {
@@ -363,7 +358,10 @@ impl MathBox {
                 1 => Some(sub),
                 _ => None,
             },
-            MathBox::Root { index: idx, radicand } => {
+            MathBox::Root {
+                index: idx,
+                radicand,
+            } => {
                 if let Some(i) = idx {
                     match index {
                         0 => Some(i),
@@ -376,26 +374,39 @@ impl MathBox {
                         _ => None,
                     }
                 }
-            },
+            }
             MathBox::Func { args, .. } => args.get_mut(index),
             MathBox::Abs(inner) | MathBox::Parens(inner) => match index {
                 0 => Some(inner),
                 _ => None,
             },
-            MathBox::Integral { lower, upper, body, var } => {
+            MathBox::Integral {
+                lower,
+                upper,
+                body,
+                var,
+            } => {
                 let mut i = 0;
                 if let Some(l) = lower {
-                    if index == i { return Some(l); }
+                    if index == i {
+                        return Some(l);
+                    }
                     i += 1;
                 }
                 if let Some(u) = upper {
-                    if index == i { return Some(u); }
+                    if index == i {
+                        return Some(u);
+                    }
                     i += 1;
                 }
-                if index == i { return Some(body); }
-                if index == i + 1 { return Some(var); }
+                if index == i {
+                    return Some(body);
+                }
+                if index == i + 1 {
+                    return Some(var);
+                }
                 None
-            },
+            }
             MathBox::Derivative { var, body, .. } => match index {
                 0 => Some(var),
                 1 => Some(body),
@@ -407,8 +418,18 @@ impl MathBox {
                 2 => Some(body),
                 _ => None,
             },
-            MathBox::Sum { var, lower, upper, body }
-            | MathBox::Product { var, lower, upper, body } => match index {
+            MathBox::Sum {
+                var,
+                lower,
+                upper,
+                body,
+            }
+            | MathBox::Product {
+                var,
+                lower,
+                upper,
+                body,
+            } => match index {
                 0 => Some(var),
                 1 => Some(lower),
                 2 => Some(upper),
@@ -426,7 +447,7 @@ impl MathBox {
                     }
                 }
                 None
-            },
+            }
             MathBox::Row(items) => items.get_mut(index),
             _ => None,
         }
@@ -450,7 +471,10 @@ impl MathBox {
                 1 => Some(sub),
                 _ => None,
             },
-            MathBox::Root { index: idx, radicand } => {
+            MathBox::Root {
+                index: idx,
+                radicand,
+            } => {
                 if let Some(i) = idx {
                     match index {
                         0 => Some(i),
@@ -463,26 +487,39 @@ impl MathBox {
                         _ => None,
                     }
                 }
-            },
+            }
             MathBox::Func { args, .. } => args.get(index),
             MathBox::Abs(inner) | MathBox::Parens(inner) => match index {
                 0 => Some(inner),
                 _ => None,
             },
-            MathBox::Integral { lower, upper, body, var } => {
+            MathBox::Integral {
+                lower,
+                upper,
+                body,
+                var,
+            } => {
                 let mut i = 0;
                 if let Some(l) = lower {
-                    if index == i { return Some(l); }
+                    if index == i {
+                        return Some(l);
+                    }
                     i += 1;
                 }
                 if let Some(u) = upper {
-                    if index == i { return Some(u); }
+                    if index == i {
+                        return Some(u);
+                    }
                     i += 1;
                 }
-                if index == i { return Some(body); }
-                if index == i + 1 { return Some(var); }
+                if index == i {
+                    return Some(body);
+                }
+                if index == i + 1 {
+                    return Some(var);
+                }
                 None
-            },
+            }
             MathBox::Derivative { var, body, .. } => match index {
                 0 => Some(var),
                 1 => Some(body),
@@ -494,8 +531,18 @@ impl MathBox {
                 2 => Some(body),
                 _ => None,
             },
-            MathBox::Sum { var, lower, upper, body }
-            | MathBox::Product { var, lower, upper, body } => match index {
+            MathBox::Sum {
+                var,
+                lower,
+                upper,
+                body,
+            }
+            | MathBox::Product {
+                var,
+                lower,
+                upper,
+                body,
+            } => match index {
                 0 => Some(var),
                 1 => Some(lower),
                 2 => Some(upper),
@@ -513,7 +560,7 @@ impl MathBox {
                     }
                 }
                 None
-            },
+            }
             MathBox::Row(items) => items.get(index),
             _ => None,
         }

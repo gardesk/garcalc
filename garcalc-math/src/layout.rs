@@ -3,7 +3,7 @@
 //! Computes bounding boxes and positions for mathematical typesetting.
 //! Uses baseline-aligned layout with proper ascent/descent metrics.
 
-use crate::mathbox::{MathBox, Operator, LimitDirection};
+use crate::mathbox::{LimitDirection, MathBox, Operator};
 use cairo::Context;
 
 /// Layout metrics for a rendered element
@@ -62,6 +62,11 @@ impl MathLayoutEngine {
         self.layout_at_depth(mathbox, ctx, 0)
     }
 
+    /// Compute layout from an explicit starting depth
+    pub fn layout_with_depth(&self, mathbox: &MathBox, ctx: &Context, depth: u32) -> LayoutBox {
+        self.layout_at_depth(mathbox, ctx, depth)
+    }
+
     /// Compute layout at a specific nesting depth
     fn layout_at_depth(&self, mathbox: &MathBox, ctx: &Context, depth: u32) -> LayoutBox {
         let scale = self.scale_for_depth(depth);
@@ -72,45 +77,42 @@ impl MathLayoutEngine {
             MathBox::Symbol(s) => self.layout_symbol(s, ctx, font_size),
             MathBox::Operator(op) => self.layout_operator(*op, ctx, font_size),
             MathBox::Slot => self.layout_slot(ctx, font_size),
-            MathBox::Fraction { num, den } => {
-                self.layout_fraction(num, den, ctx, depth)
-            }
-            MathBox::Power { base, exp } => {
-                self.layout_power(base, exp, ctx, depth)
-            }
-            MathBox::Subscript { base, sub } => {
-                self.layout_subscript(base, sub, ctx, depth)
-            }
+            MathBox::Fraction { num, den } => self.layout_fraction(num, den, ctx, depth),
+            MathBox::Power { base, exp } => self.layout_power(base, exp, ctx, depth),
+            MathBox::Subscript { base, sub } => self.layout_subscript(base, sub, ctx, depth),
             MathBox::Root { index, radicand } => {
                 self.layout_root(index.as_deref(), radicand, ctx, depth)
             }
-            MathBox::Func { name, args } => {
-                self.layout_func(name, args, ctx, depth)
-            }
+            MathBox::Func { name, args } => self.layout_func(name, args, ctx, depth),
             MathBox::Abs(inner) => self.layout_abs(inner, ctx, depth),
             MathBox::Parens(inner) => self.layout_parens(inner, ctx, depth),
-            MathBox::Integral { lower, upper, body, var } => {
-                self.layout_integral(
-                    lower.as_deref(),
-                    upper.as_deref(),
-                    body,
-                    var,
-                    ctx,
-                    depth,
-                )
-            }
+            MathBox::Integral {
+                lower,
+                upper,
+                body,
+                var,
+            } => self.layout_integral(lower.as_deref(), upper.as_deref(), body, var, ctx, depth),
             MathBox::Derivative { order, var, body } => {
                 self.layout_derivative(*order, var, body, ctx, depth)
             }
-            MathBox::Limit { var, to, direction, body } => {
-                self.layout_limit(var, to, *direction, body, ctx, depth)
-            }
-            MathBox::Sum { var, lower, upper, body } => {
-                self.layout_bigop("∑", var, lower, upper, body, ctx, depth)
-            }
-            MathBox::Product { var, lower, upper, body } => {
-                self.layout_bigop("∏", var, lower, upper, body, ctx, depth)
-            }
+            MathBox::Limit {
+                var,
+                to,
+                direction,
+                body,
+            } => self.layout_limit(var, to, *direction, body, ctx, depth),
+            MathBox::Sum {
+                var,
+                lower,
+                upper,
+                body,
+            } => self.layout_bigop("∑", var, lower, upper, body, ctx, depth),
+            MathBox::Product {
+                var,
+                lower,
+                upper,
+                body,
+            } => self.layout_bigop("∏", var, lower, upper, body, ctx, depth),
             MathBox::Matrix { rows } => self.layout_matrix(rows, ctx, depth),
             MathBox::Row(items) => self.layout_row(items, ctx, depth),
         }
@@ -141,9 +143,17 @@ impl MathLayoutEngine {
 
     /// Layout a symbol (may use italic)
     fn layout_symbol(&self, symbol: &str, ctx: &Context, font_size: f64) -> LayoutBox {
-        ctx.select_font_face(&self.font_family, cairo::FontSlant::Italic, cairo::FontWeight::Normal);
+        ctx.select_font_face(
+            &self.font_family,
+            cairo::FontSlant::Italic,
+            cairo::FontWeight::Normal,
+        );
         let layout = self.layout_text(symbol, ctx, font_size);
-        ctx.select_font_face(&self.font_family, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        ctx.select_font_face(
+            &self.font_family,
+            cairo::FontSlant::Normal,
+            cairo::FontWeight::Normal,
+        );
         layout
     }
 
@@ -158,13 +168,14 @@ impl MathLayoutEngine {
 
     /// Layout an empty slot (placeholder box)
     fn layout_slot(&self, _ctx: &Context, font_size: f64) -> LayoutBox {
-        let slot_width = font_size * 0.8;
-        let slot_height = font_size * 0.8;
+        // Keep slots readable at nested depths by enforcing a minimum visual size.
+        let slot_width = (font_size * 0.86).max(10.0);
+        let slot_height = (font_size * 0.9).max(11.0);
 
         LayoutBox {
             width: slot_width,
-            ascent: slot_height * 0.6,
-            descent: slot_height * 0.4,
+            ascent: slot_height * 0.62,
+            descent: slot_height * 0.38,
             children: vec![],
         }
     }
@@ -196,34 +207,28 @@ impl MathLayoutEngine {
             width,
             ascent: gap + bar_thickness / 2.0 + num_layout.height(),
             descent: gap + bar_thickness / 2.0 + den_layout.height(),
-            children: vec![
-                (num_x, num_y, num_layout),
-                (den_x, den_y, den_layout),
-            ],
+            children: vec![(num_x, num_y, num_layout), (den_x, den_y, den_layout)],
         }
     }
 
     /// Layout a power (superscript)
-    fn layout_power(
-        &self,
-        base: &MathBox,
-        exp: &MathBox,
-        ctx: &Context,
-        depth: u32,
-    ) -> LayoutBox {
+    fn layout_power(&self, base: &MathBox, exp: &MathBox, ctx: &Context, depth: u32) -> LayoutBox {
         let base_layout = self.layout_at_depth(base, ctx, depth);
         let exp_layout = self.layout_at_depth(exp, ctx, depth + 1);
+        let scale = self.scale_for_depth(depth);
+        let font_size = self.base_font_size * scale;
 
-        // Exponent is raised above the baseline
-        let exp_raise = base_layout.ascent * 0.5;
+        // Exponent is raised above the baseline and slightly kerned to the right.
+        let exp_raise = base_layout.ascent * 0.58 + exp_layout.descent * 0.1;
+        let exp_kern = (font_size * 0.06).max(0.8);
 
         LayoutBox {
-            width: base_layout.width + exp_layout.width,
-            ascent: (base_layout.ascent).max(exp_raise + exp_layout.height()),
+            width: base_layout.width + exp_kern + exp_layout.width,
+            ascent: base_layout.ascent.max(exp_raise + exp_layout.ascent),
             descent: base_layout.descent,
             children: vec![
                 (0.0, 0.0, base_layout.clone()),
-                (base_layout.width, -exp_raise, exp_layout),
+                (base_layout.width + exp_kern, -exp_raise, exp_layout),
             ],
         }
     }
@@ -238,17 +243,23 @@ impl MathLayoutEngine {
     ) -> LayoutBox {
         let base_layout = self.layout_at_depth(base, ctx, depth);
         let sub_layout = self.layout_at_depth(sub, ctx, depth + 1);
+        let scale = self.scale_for_depth(depth);
+        let font_size = self.base_font_size * scale;
 
-        // Subscript is lowered below the baseline
-        let sub_lower = base_layout.descent + sub_layout.ascent * 0.3;
+        // Subscript is lowered with a small right kern to avoid touching the base.
+        let sub_lower =
+            (base_layout.descent * 0.6 + sub_layout.ascent * 0.9).max(sub_layout.ascent * 0.75);
+        let sub_kern = (font_size * 0.05).max(0.6);
 
         LayoutBox {
-            width: base_layout.width + sub_layout.width,
-            ascent: base_layout.ascent,
-            descent: (base_layout.descent).max(sub_lower + sub_layout.height()),
+            width: base_layout.width + sub_kern + sub_layout.width,
+            ascent: base_layout
+                .ascent
+                .max((sub_layout.ascent - sub_lower).max(0.0)),
+            descent: base_layout.descent.max(sub_lower + sub_layout.descent),
             children: vec![
                 (0.0, 0.0, base_layout.clone()),
-                (base_layout.width, sub_lower, sub_layout),
+                (base_layout.width + sub_kern, sub_lower, sub_layout),
             ],
         }
     }
@@ -299,13 +310,11 @@ impl MathLayoutEngine {
     }
 
     /// Layout a function call
-    fn layout_func(
-        &self,
-        name: &str,
-        args: &[MathBox],
-        ctx: &Context,
-        depth: u32,
-    ) -> LayoutBox {
+    fn layout_func(&self, name: &str, args: &[MathBox], ctx: &Context, depth: u32) -> LayoutBox {
+        if name == "factorial" && args.len() == 1 {
+            return self.layout_factorial(&args[0], ctx, depth);
+        }
+
         let scale = self.scale_for_depth(depth);
         let font_size = self.base_font_size * scale;
 
@@ -343,6 +352,23 @@ impl MathLayoutEngine {
             ascent: max_ascent,
             descent: max_descent,
             children,
+        }
+    }
+
+    fn layout_factorial(&self, arg: &MathBox, ctx: &Context, depth: u32) -> LayoutBox {
+        let scale = self.scale_for_depth(depth);
+        let font_size = self.base_font_size * scale;
+        let gap = (font_size * 0.06).max(0.6);
+
+        let arg_layout = self.layout_at_depth(arg, ctx, depth);
+        let arg_width = arg_layout.width;
+        let bang_layout = self.layout_text("!", ctx, font_size);
+
+        LayoutBox {
+            width: arg_width + gap + bang_layout.width,
+            ascent: arg_layout.ascent.max(bang_layout.ascent),
+            descent: arg_layout.descent.max(bang_layout.descent),
+            children: vec![(0.0, 0.0, arg_layout), (arg_width + gap, 0.0, bang_layout)],
         }
     }
 
@@ -389,48 +415,45 @@ impl MathLayoutEngine {
 
         let body_layout = self.layout_at_depth(body, ctx, depth);
         let var_layout = self.layout_at_depth(var, ctx, depth);
-
-        // Integral symbol sizing
-        let int_height = (body_layout.height()).max(font_size * 1.5);
-        let int_width = font_size * 0.5;
-
-        let mut width = int_width;
-        let mut ascent = int_height / 2.0;
-        let mut descent = int_height / 2.0;
-        let mut children = vec![];
-
-        // Lower bound
-        if let Some(lo) = lower {
-            let lo_layout = self.layout_at_depth(lo, ctx, depth + 1);
-            children.push((0.0, int_height / 2.0 + lo_layout.ascent, lo_layout.clone()));
-            descent = descent.max(int_height / 2.0 + lo_layout.height());
-            width = width.max(lo_layout.width);
-        }
-
-        // Upper bound
-        if let Some(hi) = upper {
-            let hi_layout = self.layout_at_depth(hi, ctx, depth + 1);
-            children.push((0.0, -(int_height / 2.0 + hi_layout.descent), hi_layout.clone()));
-            ascent = ascent.max(int_height / 2.0 + hi_layout.height());
-            width = width.max(hi_layout.width);
-        }
-
-        // Body
-        let body_x = width + font_size * 0.2;
-        children.push((body_x, 0.0, body_layout.clone()));
-        width = body_x + body_layout.width;
-
-        // "dx" part
         let d_layout = self.layout_text("d", ctx, font_size);
-        children.push((width + font_size * 0.1, 0.0, d_layout.clone()));
-        width += font_size * 0.1 + d_layout.width;
-        children.push((width, 0.0, var_layout.clone()));
-        width += var_layout.width;
+
+        // Integral symbol sizing and metrics
+        let symbol_size = body_layout.height().max(font_size * 1.8);
+        ctx.set_font_size(symbol_size);
+        let int_extents = ctx.text_extents("∫").unwrap();
+        let int_font_extents = ctx.font_extents().unwrap();
+        let symbol_width = int_extents.x_advance();
+        let symbol_ascent = int_font_extents.ascent();
+        let symbol_descent = int_font_extents.descent();
+
+        let lo_layout = lower.map(|lo| self.layout_at_depth(lo, ctx, depth + 1));
+        let hi_layout = upper.map(|hi| self.layout_at_depth(hi, ctx, depth + 1));
+
+        let bound_gap = font_size * 0.14;
+        let bounds_width = symbol_width
+            .max(lo_layout.as_ref().map(|l| l.width).unwrap_or(0.0))
+            .max(hi_layout.as_ref().map(|l| l.width).unwrap_or(0.0));
+        let body_gap = font_size * 0.22;
+        let dx_gap = font_size * 0.14;
+
+        let mut children = vec![];
+        let body_x = bounds_width + body_gap;
+        children.push((body_x, 0.0, body_layout.clone()));
+
+        let d_x = body_x + body_layout.width + dx_gap;
+        children.push((d_x, 0.0, d_layout.clone()));
+        let var_x = d_x + d_layout.width;
+        children.push((var_x, 0.0, var_layout.clone()));
+
+        let ascent =
+            symbol_ascent + bound_gap + hi_layout.as_ref().map(|l| l.height()).unwrap_or(0.0);
+        let descent =
+            symbol_descent + bound_gap + lo_layout.as_ref().map(|l| l.height()).unwrap_or(0.0);
 
         LayoutBox {
-            width,
-            ascent,
-            descent,
+            width: var_x + var_layout.width,
+            ascent: ascent.max(body_layout.ascent),
+            descent: descent.max(body_layout.descent),
             children,
         }
     }
@@ -446,6 +469,7 @@ impl MathLayoutEngine {
     ) -> LayoutBox {
         let scale = self.scale_for_depth(depth);
         let font_size = self.base_font_size * scale;
+        let frac_font_size = font_size * 0.8;
 
         let var_layout = self.layout_at_depth(var, ctx, depth + 1);
         let body_layout = self.layout_at_depth(body, ctx, depth);
@@ -463,22 +487,20 @@ impl MathLayoutEngine {
             "d".to_string()
         };
 
-        let d_layout = self.layout_text(&d_str, ctx, font_size);
-        let dx_layout = self.layout_text(&dx_str, ctx, font_size);
-
-        let frac_width = d_layout.width.max(dx_layout.width + var_layout.width) + font_size * 0.2;
-        let bar_gap = font_size * 0.1;
-
-        let width = frac_width + font_size * 0.2 + body_layout.width;
-        let frac_height = d_layout.height() + dx_layout.height() + var_layout.height() + bar_gap * 2.0;
+        let d_layout = self.layout_text(&d_str, ctx, frac_font_size);
+        let dx_layout = self.layout_text(&dx_str, ctx, frac_font_size);
+        let den_sep = (frac_font_size * 0.08).max(0.6);
+        let denom_width = dx_layout.width + den_sep + var_layout.width;
+        let denom_height = dx_layout.height().max(var_layout.height());
+        let frac_width = d_layout.width.max(denom_width) + font_size * 0.18;
+        let bar_gap = font_size * 0.14;
+        let body_gap = font_size * 0.3;
 
         LayoutBox {
-            width,
-            ascent: frac_height / 2.0 + bar_gap,
-            descent: frac_height / 2.0 + bar_gap,
-            children: vec![
-                (frac_width + font_size * 0.2, 0.0, body_layout),
-            ],
+            width: frac_width + body_gap + body_layout.width,
+            ascent: (bar_gap + d_layout.height()).max(body_layout.ascent),
+            descent: (bar_gap + denom_height).max(body_layout.descent),
+            children: vec![(frac_width + body_gap, 0.0, body_layout)],
         }
     }
 
@@ -501,33 +523,43 @@ impl MathLayoutEngine {
 
         // "lim" text
         let lim_layout = self.layout_text("lim", ctx, font_size);
+        let lim_width = lim_layout.width;
 
         // Build subscript: "x→a" or "x→a⁺" or "x→a⁻"
-        let arrow_layout = self.layout_text("→", ctx, font_size * 0.7);
+        let sub_font_size = font_size * 0.7;
+        let arrow_layout = self.layout_text("→", ctx, sub_font_size);
         let dir_str = match direction {
             Some(LimitDirection::FromRight) => "⁺",
             Some(LimitDirection::FromLeft) => "⁻",
             None => "",
         };
         let dir_layout = if !dir_str.is_empty() {
-            Some(self.layout_text(dir_str, ctx, font_size * 0.5))
+            Some(self.layout_text(dir_str, ctx, sub_font_size * 0.6))
         } else {
             None
         };
 
-        let subscript_width = var_layout.width + arrow_layout.width + to_layout.width
+        let sub_sep = (sub_font_size * 0.08).max(0.5);
+        let subscript_width = var_layout.width
+            + sub_sep
+            + arrow_layout.width
+            + sub_sep
+            + to_layout.width
             + dir_layout.as_ref().map(|l| l.width).unwrap_or(0.0);
-        let subscript_height = var_layout.height().max(arrow_layout.height()).max(to_layout.height());
+        let subscript_height = var_layout
+            .height()
+            .max(arrow_layout.height())
+            .max(to_layout.height());
 
-        let lim_width = lim_layout.width.max(subscript_width);
+        let lim_col_width = lim_width.max(subscript_width);
+        let body_gap = font_size * 0.3;
+        let subscript_drop = font_size * 0.2 + subscript_height;
 
         LayoutBox {
-            width: lim_width + font_size * 0.3 + body_layout.width,
+            width: lim_col_width + body_gap + body_layout.width,
             ascent: lim_layout.ascent.max(body_layout.ascent),
-            descent: (lim_layout.descent + subscript_height + font_size * 0.1).max(body_layout.descent),
-            children: vec![
-                (lim_width + font_size * 0.3, 0.0, body_layout),
-            ],
+            descent: subscript_drop.max(body_layout.descent),
+            children: vec![(lim_col_width + body_gap, 0.0, body_layout)],
         }
     }
 
@@ -535,7 +567,7 @@ impl MathLayoutEngine {
     fn layout_bigop(
         &self,
         symbol: &str,
-        _var: &MathBox,
+        var: &MathBox,
         lower: &MathBox,
         upper: &MathBox,
         body: &MathBox,
@@ -546,6 +578,7 @@ impl MathLayoutEngine {
         let font_size = self.base_font_size * scale;
 
         let body_layout = self.layout_at_depth(body, ctx, depth);
+        let var_layout = self.layout_at_depth(var, ctx, depth + 1);
         let lower_layout = self.layout_at_depth(lower, ctx, depth + 1);
         let upper_layout = self.layout_at_depth(upper, ctx, depth + 1);
 
@@ -554,21 +587,34 @@ impl MathLayoutEngine {
         ctx.set_font_size(symbol_size);
         let symbol_extents = ctx.text_extents(symbol).unwrap();
         let symbol_width = symbol_extents.x_advance();
-        let symbol_height = symbol_size;
+        let symbol_font_extents = ctx.font_extents().unwrap();
+        let symbol_ascent = symbol_font_extents.ascent();
+        let symbol_descent = symbol_font_extents.descent();
 
-        let op_width = symbol_width.max(lower_layout.width).max(upper_layout.width);
-        let gap = font_size * 0.1;
+        let bound_font_size = self.base_font_size * self.scale_for_depth(depth + 1);
+        let eq_layout = self.layout_text("=", ctx, bound_font_size);
+        let lower_sep = (bound_font_size * 0.08).max(0.6);
+        let lower_block_width =
+            var_layout.width + lower_sep + eq_layout.width + lower_sep + lower_layout.width;
 
-        let ascent = symbol_height / 2.0 + gap + upper_layout.height();
-        let descent = symbol_height / 2.0 + gap + lower_layout.height();
+        let op_width = symbol_width.max(lower_block_width).max(upper_layout.width);
+        let bounds_gap = font_size * 0.16;
+        let body_gap = font_size * 0.32;
+        // Rendering centers big-op symbols around the expression baseline.
+        // Reserve half of total glyph height above and below for consistent placement.
+        let symbol_half_height = (symbol_ascent + symbol_descent) * 0.5;
+
+        let ascent =
+            (symbol_half_height + bounds_gap + upper_layout.height()).max(body_layout.ascent);
+        let descent =
+            (symbol_half_height + bounds_gap + lower_layout.height().max(var_layout.height()))
+                .max(body_layout.descent);
 
         LayoutBox {
-            width: op_width + font_size * 0.3 + body_layout.width,
-            ascent: ascent.max(body_layout.ascent),
-            descent: descent.max(body_layout.descent),
-            children: vec![
-                (op_width + font_size * 0.3, 0.0, body_layout),
-            ],
+            width: op_width + body_gap + body_layout.width,
+            ascent,
+            descent,
+            children: vec![(op_width + body_gap, 0.0, body_layout)],
         }
     }
 
@@ -613,8 +659,8 @@ impl MathLayoutEngine {
         let total_width: f64 = col_widths.iter().sum::<f64>()
             + cell_padding * (num_cols as f64 - 1.0)
             + 2.0 * bracket_width;
-        let total_height: f64 = row_heights.iter().sum::<f64>()
-            + cell_padding * (rows.len() as f64 - 1.0);
+        let total_height: f64 =
+            row_heights.iter().sum::<f64>() + cell_padding * (rows.len() as f64 - 1.0);
 
         // Position cells
         let mut children = vec![];
@@ -694,6 +740,12 @@ fn superscript_digits(n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cairo::{Context, Format, ImageSurface};
+
+    fn test_context() -> Context {
+        let surface = ImageSurface::create(Format::ARgb32, 256, 256).unwrap();
+        Context::new(&surface).unwrap()
+    }
 
     #[test]
     fn test_scale_for_depth() {
@@ -708,5 +760,159 @@ mod tests {
     fn test_superscript_digits() {
         assert_eq!(superscript_digits(2), "²");
         assert_eq!(superscript_digits(123), "¹²³");
+    }
+
+    #[test]
+    fn test_slot_min_size_at_nested_depth() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+        let slot = engine.layout_with_depth(&MathBox::Slot, &ctx, 2);
+        assert!(slot.width >= 10.0);
+        assert!(slot.height() >= 11.0);
+    }
+
+    #[test]
+    fn test_power_layout_raises_exponent() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+        let power = MathBox::Power {
+            base: Box::new(MathBox::Number("2".to_string())),
+            exp: Box::new(MathBox::Slot),
+        };
+        let layout = engine.layout(&power, &ctx);
+        let base_layout = engine.layout(&MathBox::Number("2".to_string()), &ctx);
+
+        assert!(layout.width > base_layout.width);
+        assert!(layout.ascent > base_layout.ascent);
+        assert_eq!(layout.children.len(), 2);
+        assert!(layout.children[1].1 < 0.0);
+    }
+
+    #[test]
+    fn test_subscript_layout_lowers_and_extends_descent() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+        let sub = MathBox::Subscript {
+            base: Box::new(MathBox::Number("x".to_string())),
+            sub: Box::new(MathBox::Slot),
+        };
+        let layout = engine.layout(&sub, &ctx);
+        let base_layout = engine.layout(&MathBox::Number("x".to_string()), &ctx);
+
+        assert!(layout.descent > base_layout.descent);
+        assert_eq!(layout.children.len(), 2);
+        assert!(layout.children[1].1 > 0.0);
+    }
+
+    #[test]
+    fn test_bigop_layout_reserves_space_for_var_equals_lower() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+
+        let short = MathBox::Sum {
+            var: Box::new(MathBox::Symbol("i".to_string())),
+            lower: Box::new(MathBox::Number("1".to_string())),
+            upper: Box::new(MathBox::Number("5".to_string())),
+            body: Box::new(MathBox::Slot),
+        };
+        let wide = MathBox::Sum {
+            var: Box::new(MathBox::Symbol("index".to_string())),
+            lower: Box::new(MathBox::Number("123456".to_string())),
+            upper: Box::new(MathBox::Number("5".to_string())),
+            body: Box::new(MathBox::Slot),
+        };
+
+        let short_layout = engine.layout(&short, &ctx);
+        let wide_layout = engine.layout(&wide, &ctx);
+        assert!(wide_layout.width > short_layout.width);
+    }
+
+    #[test]
+    fn test_bigop_layout_expands_ascent_descent_for_bounds() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+
+        let sum = MathBox::Sum {
+            var: Box::new(MathBox::Symbol("i".to_string())),
+            lower: Box::new(MathBox::Slot),
+            upper: Box::new(MathBox::Slot),
+            body: Box::new(MathBox::Number("x".to_string())),
+        };
+        let body_layout = engine.layout(&MathBox::Number("x".to_string()), &ctx);
+        let sum_layout = engine.layout(&sum, &ctx);
+
+        assert!(sum_layout.ascent > body_layout.ascent);
+        assert!(sum_layout.descent > body_layout.descent);
+    }
+
+    #[test]
+    fn test_derivative_layout_widens_for_long_variable() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+
+        let short = MathBox::Derivative {
+            order: 1,
+            var: Box::new(MathBox::Symbol("x".to_string())),
+            body: Box::new(MathBox::Slot),
+        };
+        let long = MathBox::Derivative {
+            order: 1,
+            var: Box::new(MathBox::Symbol("variable".to_string())),
+            body: Box::new(MathBox::Slot),
+        };
+
+        let short_layout = engine.layout(&short, &ctx);
+        let long_layout = engine.layout(&long, &ctx);
+        assert!(long_layout.width > short_layout.width);
+    }
+
+    #[test]
+    fn test_integral_layout_bounds_expand_vertical_space() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+
+        let plain = MathBox::Integral {
+            lower: None,
+            upper: None,
+            body: Box::new(MathBox::Slot),
+            var: Box::new(MathBox::Symbol("x".to_string())),
+        };
+        let bounded = MathBox::Integral {
+            lower: Some(Box::new(MathBox::Slot)),
+            upper: Some(Box::new(MathBox::Slot)),
+            body: Box::new(MathBox::Slot),
+            var: Box::new(MathBox::Symbol("x".to_string())),
+        };
+
+        let plain_layout = engine.layout(&plain, &ctx);
+        let bounded_layout = engine.layout(&bounded, &ctx);
+        assert!(bounded_layout.ascent > plain_layout.ascent);
+        assert!(bounded_layout.descent > plain_layout.descent);
+    }
+
+    #[test]
+    fn test_limit_layout_widens_for_wide_subscript_and_extends_descent() {
+        let engine = MathLayoutEngine::default();
+        let ctx = test_context();
+
+        let narrow = MathBox::Limit {
+            var: Box::new(MathBox::Symbol("x".to_string())),
+            to: Box::new(MathBox::Number("1".to_string())),
+            direction: None,
+            body: Box::new(MathBox::Slot),
+        };
+        let wide = MathBox::Limit {
+            var: Box::new(MathBox::Symbol("veryLongVariable".to_string())),
+            to: Box::new(MathBox::Number("123456".to_string())),
+            direction: Some(LimitDirection::FromRight),
+            body: Box::new(MathBox::Slot),
+        };
+
+        let narrow_layout = engine.layout(&narrow, &ctx);
+        let wide_layout = engine.layout(&wide, &ctx);
+        let body_layout = engine.layout(&MathBox::Slot, &ctx);
+
+        assert!(wide_layout.width > narrow_layout.width);
+        assert!(wide_layout.descent > body_layout.descent);
     }
 }

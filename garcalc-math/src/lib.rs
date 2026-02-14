@@ -6,14 +6,14 @@
 //! - Keyboard navigation through expression tree
 //! - Bidirectional conversion with CAS Expr type
 
-pub mod mathbox;
-pub mod layout;
-pub mod render;
-pub mod input;
 pub mod convert;
+pub mod input;
+pub mod layout;
+pub mod mathbox;
+pub mod render;
 
-pub use mathbox::{MathBox, Cursor};
+pub use convert::{ConvertError, from_expr, to_expr};
+pub use input::{InputResult, MathInput};
 pub use layout::{LayoutBox, MathLayoutEngine};
+pub use mathbox::{Cursor, MathBox};
 pub use render::MathRenderer;
-pub use input::{MathInput, InputResult};
-pub use convert::{to_expr, from_expr, ConvertError};
