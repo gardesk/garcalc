@@ -1,12 +1,12 @@
 //! Application state and event loop
 
 use anyhow::Result;
-use garcalc_cas::{Evaluator, parser};
+use garcalc_cas::{parser, Evaluator};
 use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
 use garcalc_math::input::SpecialKey;
 use garcalc_math::{
-    ConvertError, InputResult as MathInputResult, MathBox, MathInput, from_expr, to_expr,
+    from_expr, to_expr, ConvertError, InputResult as MathInputResult, MathBox, MathInput,
 };
 use gartk_core::{InputEvent, Key, Modifiers, MouseButton};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
@@ -53,6 +53,8 @@ pub struct App {
     popup_mode: bool,
     /// Whether app should quit
     should_quit: bool,
+    /// Whether the help modal overlay is open
+    help_modal_open: bool,
     /// Whether the cursor is currently visible (blink state)
     cursor_visible: bool,
     /// Last time the cursor blink state toggled
@@ -126,6 +128,7 @@ impl App {
             history_index: None,
             popup_mode: popup,
             should_quit: false,
+            help_modal_open: false,
             cursor_visible: true,
             last_cursor_blink: Instant::now(),
             has_focus: false,
@@ -151,7 +154,21 @@ impl App {
                 InputEvent::MousePress(mouse_ev) => {
                     let x = mouse_ev.position.x as f64;
                     let y = mouse_ev.position.y as f64;
-                    if self.mode == Mode::Graph {
+
+                    if mouse_ev.button == Some(MouseButton::Left)
+                        && self.ui.is_help_button_hit(x, y)
+                    {
+                        self.help_modal_open = !self.help_modal_open;
+                        self.drag_start = None;
+                        ev.request_redraw();
+                    } else if self.help_modal_open {
+                        if mouse_ev.button == Some(MouseButton::Left)
+                            && (self.ui.is_help_close_hit(x, y) || !self.ui.is_help_modal_hit(x, y))
+                        {
+                            self.help_modal_open = false;
+                            ev.request_redraw();
+                        }
+                    } else if self.mode == Mode::Graph {
                         if mouse_ev.button == Some(MouseButton::Left) {
                             // Left click - start drag for pan
                             self.drag_start = Some((x, y));
@@ -171,7 +188,9 @@ impl App {
                     }
                 }
                 InputEvent::MouseRelease(mouse_ev) => {
-                    if (self.mode == Mode::Graph || self.mode == Mode::Graph3D)
+                    if self.help_modal_open {
+                        self.drag_start = None;
+                    } else if (self.mode == Mode::Graph || self.mode == Mode::Graph3D)
                         && mouse_ev.button == Some(MouseButton::Left)
                     {
                         self.drag_start = None;
@@ -180,7 +199,9 @@ impl App {
                 InputEvent::MouseMove(mouse_ev) => {
                     let x = mouse_ev.position.x as f64;
                     let y = mouse_ev.position.y as f64;
-                    if self.mode == Mode::Graph {
+                    if self.help_modal_open {
+                        self.drag_start = None;
+                    } else if self.mode == Mode::Graph {
                         if let Some((start_x, start_y)) = self.drag_start {
                             let (width, height) = self.ui.size();
                             let dx = x - start_x;
@@ -204,7 +225,9 @@ impl App {
                     }
                 }
                 InputEvent::Scroll(scroll_ev) => {
-                    if self.mode == Mode::Graph {
+                    if self.help_modal_open {
+                        // Disable background interactions while modal is visible.
+                    } else if self.mode == Mode::Graph {
                         let factor = if scroll_ev.delta_y > 0 { 1.1 } else { 0.9 };
                         let (width, height) = self.ui.size();
                         let x = scroll_ev.position.x as f64;
@@ -258,6 +281,18 @@ impl App {
 
     fn handle_key(&mut self, key: &Key, modifiers: Modifiers) {
         let ctrl = modifiers.ctrl;
+
+        if !modifiers.ctrl && !modifiers.alt && !modifiers.super_key && *key == Key::Char('?') {
+            self.help_modal_open = !self.help_modal_open;
+            return;
+        }
+
+        if self.help_modal_open {
+            if matches!(key, Key::Escape | Key::Return) {
+                self.help_modal_open = false;
+            }
+            return;
+        }
 
         // Global keys
         match key {
@@ -430,13 +465,13 @@ impl App {
     fn handle_calculator_input(&mut self, key: &Key, modifiers: Modifiers) {
         if !modifiers.ctrl && !modifiers.alt && !modifiers.super_key {
             match key {
-                // Plain Up/Down should recall history when input is blank.
-                // This keeps template navigation intact while actively editing.
-                Key::Up if self.is_blank_math_input() => {
+                // Plain Up/Down should recall history when input is blank or while
+                // actively browsing recalled entries.
+                Key::Up if self.is_blank_math_input() || self.calc_history_index.is_some() => {
                     self.recall_calculator_history(true);
                     return;
                 }
-                Key::Down if self.is_blank_math_input() => {
+                Key::Down if self.is_blank_math_input() || self.calc_history_index.is_some() => {
                     self.recall_calculator_history(false);
                     return;
                 }
@@ -901,6 +936,7 @@ impl App {
             self.mode,
             &self.graph,
             &self.graph3d,
+            self.help_modal_open,
         )?;
         Ok(())
     }

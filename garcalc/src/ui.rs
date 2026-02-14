@@ -1,11 +1,12 @@
 //! UI rendering using gartk-render
 
 use anyhow::Result;
+use garcalc_cas::expr::{Expr, Symbol};
 use garcalc_cas::parser;
 use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
-use garcalc_math::{MathBox, MathInput, MathLayoutEngine, MathRenderer, from_expr};
-use gartk_core::{Color, Rect, Theme};
+use garcalc_math::{from_expr, MathBox, MathInput, MathLayoutEngine, MathRenderer};
+use gartk_core::{Color, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
 use gartk_x11::Window;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
@@ -21,6 +22,8 @@ pub struct CalculatorUI {
 }
 
 impl CalculatorUI {
+    const HELP_BUTTON_SIZE: u32 = 28;
+
     pub fn new(window: Window, width: u32, height: u32) -> Result<Self> {
         let theme = Theme::dark();
         let renderer = Renderer::with_theme(width, height, theme.clone())?;
@@ -67,6 +70,7 @@ impl CalculatorUI {
         mode: Mode,
         graph: &Graph2D,
         graph3d: &Graph3D,
+        show_help_modal: bool,
     ) -> Result<()> {
         let size = self.renderer.size();
 
@@ -100,10 +104,30 @@ impl CalculatorUI {
             }
         }
 
+        self.draw_help_button()?;
+        if show_help_modal {
+            self.draw_help_modal(mode)?;
+        }
+
         // Copy to window
         self.copy_to_window()?;
 
         Ok(())
+    }
+
+    pub fn is_help_button_hit(&self, x: f64, y: f64) -> bool {
+        self.help_button_rect()
+            .contains_point(Point::new(x as i32, y as i32))
+    }
+
+    pub fn is_help_modal_hit(&self, x: f64, y: f64) -> bool {
+        self.help_modal_rect()
+            .contains_point(Point::new(x as i32, y as i32))
+    }
+
+    pub fn is_help_close_hit(&self, x: f64, y: f64) -> bool {
+        self.help_close_rect()
+            .contains_point(Point::new(x as i32, y as i32))
     }
 
     fn render_graph_mode(
@@ -311,6 +335,181 @@ impl CalculatorUI {
         Ok(())
     }
 
+    fn help_button_rect(&self) -> Rect {
+        let size = self.renderer.size();
+        let margin = 10i32;
+        Rect::new(
+            size.width as i32 - Self::HELP_BUTTON_SIZE as i32 - margin,
+            margin,
+            Self::HELP_BUTTON_SIZE,
+            Self::HELP_BUTTON_SIZE,
+        )
+    }
+
+    fn help_modal_rect(&self) -> Rect {
+        let size = self.renderer.size();
+        let width = ((size.width as f64 * 0.72).clamp(460.0, 760.0)).round() as u32;
+        let height = ((size.height as f64 * 0.74).clamp(360.0, 560.0)).round() as u32;
+        Rect::new(
+            ((size.width - width) / 2) as i32,
+            ((size.height - height) / 2) as i32,
+            width,
+            height,
+        )
+    }
+
+    fn help_close_rect(&self) -> Rect {
+        let modal = self.help_modal_rect();
+        let size = 26u32;
+        Rect::new(modal.right() - size as i32 - 14, modal.y + 12, size, size)
+    }
+
+    fn draw_help_button(&mut self) -> Result<()> {
+        let rect = self.help_button_rect();
+        self.renderer.fill_rounded_rect(
+            rect,
+            8.0,
+            self.theme.selection_background.with_alpha(0.9),
+        )?;
+        self.renderer
+            .stroke_rounded_rect(rect, 8.0, self.theme.border.with_alpha(0.95), 1.0)?;
+
+        let style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(16.0)
+            .color(self.theme.selection_foreground);
+        let label = "?";
+        let text_size = self.renderer.measure_text(label, &style)?;
+        let text_x = rect.x as f64 + (rect.width as f64 - text_size.width as f64) * 0.5;
+        let text_y = rect.y as f64 + (rect.height as f64 - text_size.height as f64) * 0.5;
+        self.renderer.text(label, text_x, text_y, &style)?;
+        Ok(())
+    }
+
+    fn draw_help_modal(&mut self, mode: Mode) -> Result<()> {
+        let size = self.renderer.size();
+        let scrim = Rect::new(0, 0, size.width, size.height);
+        self.renderer
+            .fill_rect(scrim, Color::rgb(0.0, 0.0, 0.0).with_alpha(0.62))?;
+
+        let modal = self.help_modal_rect();
+        self.renderer
+            .fill_rounded_rect(modal, 12.0, self.theme.background.lighten(0.08))?;
+        self.renderer
+            .stroke_rounded_rect(modal, 12.0, self.theme.border.with_alpha(0.95), 1.0)?;
+
+        let close = self.help_close_rect();
+        self.renderer.fill_rounded_rect(
+            close,
+            6.0,
+            self.theme.item_hover_background.with_alpha(0.95),
+        )?;
+        self.renderer
+            .stroke_rounded_rect(close, 6.0, self.theme.border.with_alpha(0.9), 1.0)?;
+
+        let close_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(14.0)
+            .color(self.theme.foreground);
+        let close_size = self.renderer.measure_text("x", &close_style)?;
+        self.renderer.text(
+            "x",
+            close.x as f64 + (close.width as f64 - close_size.width as f64) * 0.5,
+            close.y as f64 + (close.height as f64 - close_size.height as f64) * 0.5,
+            &close_style,
+        )?;
+
+        let title_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(17.0)
+            .color(self.theme.foreground);
+        self.renderer.text(
+            "Quick Help",
+            (modal.x + 20) as f64,
+            (modal.y + 16) as f64,
+            &title_style,
+        )?;
+
+        let heading_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(13.0)
+            .color(self.theme.selection_foreground);
+        let body_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(12.0)
+            .color(self.theme.foreground.with_alpha(0.92));
+        let hint_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground.with_alpha(0.75));
+
+        let mut y = modal.y + 48;
+        let x = modal.x + 20;
+
+        self.renderer
+            .text("Common expressions", x as f64, y as f64, &heading_style)?;
+        y += 22;
+        for line in [
+            "2+2, sin(pi/2), sqrt(2), x^2 + 2*x + 1",
+            "diff(x^2, x), integrate(sin(x), x), solve(x^2-4, x)",
+            "sum(k, k, 1, n), product(k, k, 1, n)",
+        ] {
+            self.renderer
+                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
+            y += 18;
+        }
+
+        y += 10;
+        self.renderer.text(
+            "Structured input commands",
+            x as f64,
+            y as f64,
+            &heading_style,
+        )?;
+        y += 22;
+        for line in [
+            "Type '\\' then command and press Enter/Space.",
+            "\\frac  \\sqrt  \\sum  \\prod  \\diff  \\dint  \\lim  \\solve",
+        ] {
+            self.renderer
+                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
+            y += 18;
+        }
+
+        y += 10;
+        self.renderer
+            .text("Keybinds", x as f64, y as f64, &heading_style)?;
+        y += 22;
+        for line in [
+            "Enter evaluate, Tab/Shift+Tab move slot focus",
+            "Arrow keys move cursor, Up/Down recall history when input is blank",
+            "Ctrl+Up/Down force calculator history recall",
+            "F1 calculator, F2 graph, F3 3D, Esc closes this help",
+        ] {
+            self.renderer
+                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
+            y += 18;
+        }
+
+        y += 8;
+        let mode_hint = match mode {
+            Mode::Graph => "Graph mode: drag to pan, scroll to zoom, right-click trace toggle.",
+            Mode::Graph3D => "3D mode: drag to rotate camera, scroll to zoom depth.",
+            _ => "Calculator mode: use pretty templates, then evaluate with Enter.",
+        };
+        self.renderer
+            .text(mode_hint, x as f64, y as f64, &hint_style)?;
+        y += 20;
+        self.renderer.text(
+            "Tip: click outside this panel (or x) to close.",
+            x as f64,
+            y as f64,
+            &hint_style,
+        )?;
+
+        Ok(())
+    }
+
     fn draw_history(&mut self, history: &[HistoryEntry], start_y: i32, end_y: i32) -> Result<()> {
         let min_entry_height = 50;
         let max_entries = ((end_y - start_y) / min_entry_height).max(1) as usize;
@@ -442,7 +641,54 @@ impl CalculatorUI {
         if trimmed.is_empty() {
             return None;
         }
-        parser::parse(trimmed).ok().map(|expr| from_expr(&expr))
+        Self::parse_display_derivative(trimmed)
+            .or_else(|| parser::parse(trimmed).ok())
+            .map(|expr| from_expr(&expr))
+    }
+
+    fn parse_display_derivative(text: &str) -> Option<Expr> {
+        let open = text.find('(')?;
+        if !text.ends_with(')') || open + 1 >= text.len() {
+            return None;
+        }
+
+        let prefix = &text[..open];
+        if !(prefix.starts_with("d/d") || prefix.starts_with("d^")) {
+            return None;
+        }
+
+        let body_text = &text[open + 1..text.len() - 1];
+        let body_expr = parser::parse(body_text).ok()?;
+
+        if let Some(var_name) = prefix.strip_prefix("d/d") {
+            if var_name.is_empty() {
+                return None;
+            }
+            return Some(Expr::Derivative {
+                expr: Box::new(body_expr),
+                var: Symbol::new(var_name),
+                order: 1,
+            });
+        }
+
+        let rest = prefix.strip_prefix("d^")?;
+        let (order_text, den_part) = rest.split_once("/d")?;
+        let order: u32 = order_text.parse().ok()?;
+        if order == 0 {
+            return None;
+        }
+
+        let suffix = format!("^{order}");
+        let var_name = den_part.strip_suffix(&suffix)?;
+        if var_name.is_empty() {
+            return None;
+        }
+
+        Some(Expr::Derivative {
+            expr: Box::new(body_expr),
+            var: Symbol::new(var_name),
+            order,
+        })
     }
 
     fn draw_text_input(
@@ -590,5 +836,29 @@ impl CalculatorUI {
 impl Drop for CalculatorUI {
     fn drop(&mut self) {
         let _ = self.window.connection().inner().free_gc(self.gc);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CalculatorUI;
+    use garcalc_cas::expr::Expr;
+
+    #[test]
+    fn parse_display_derivative_first_order() {
+        let parsed = CalculatorUI::parse_display_derivative("d/dx(e^x)").unwrap();
+        assert!(matches!(parsed, Expr::Derivative { order: 1, .. }));
+    }
+
+    #[test]
+    fn parse_display_derivative_higher_order() {
+        let parsed = CalculatorUI::parse_display_derivative("d^2/dx^2(sin(x))").unwrap();
+        assert!(matches!(parsed, Expr::Derivative { order: 2, .. }));
+    }
+
+    #[test]
+    fn parse_history_mathbox_prefers_display_derivative_form() {
+        let parsed = CalculatorUI::parse_history_mathbox("d/dx(e^x)").unwrap();
+        assert!(matches!(parsed, garcalc_math::MathBox::Derivative { .. }));
     }
 }
