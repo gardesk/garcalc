@@ -501,55 +501,242 @@ fn convert_row(items: &[MathBox]) -> Result<Expr, ConvertError> {
         return to_expr(&items[0]);
     }
 
-    // Simple parsing: collect operands and operators
+    // Parse a flat row with implicit multiplication and basic precedence.
     let mut operands: Vec<Expr> = Vec::new();
     let mut operators: Vec<Operator> = Vec::new();
+    let mut expecting_operand = true;
 
     let mut i = 0;
     while i < items.len() {
-        match &items[i] {
-            MathBox::Operator(op) => {
-                operators.push(*op);
+        let mut push_operand = |expr: Expr| {
+            if !expecting_operand {
+                operators.push(Operator::Mul);
             }
-            MathBox::Symbol(s) if s == "!" => {
+            operands.push(expr);
+            expecting_operand = false;
+        };
+
+        match (&items[i], items.get(i + 1)) {
+            (MathBox::Operator(op), _) => {
+                match op {
+                    Operator::Add if expecting_operand => {
+                        // Unary plus: no-op.
+                    }
+                    Operator::Sub if expecting_operand => {
+                        // Unary minus: rewrite as 0 - ...
+                        operands.push(Expr::Integer(0));
+                        operators.push(Operator::Sub);
+                    }
+                    _ => {
+                        operators.push(*op);
+                    }
+                }
+                expecting_operand = true;
+            }
+            (MathBox::Symbol(s), _) if s == "!" => {
                 let Some(last) = operands.pop() else {
                     return Err(ConvertError::MissingField(
                         "factorial operand before '!'".to_string(),
                     ));
                 };
                 operands.push(Expr::Func("factorial".to_string(), vec![last]));
+                expecting_operand = false;
             }
-            other => {
-                operands.push(to_expr(other)?);
+            (MathBox::Symbol(name), Some(MathBox::Parens(inner)))
+                if is_function_name(name.as_str()) =>
+            {
+                let args = parse_paren_args(inner)?;
+                push_operand(Expr::Func(name.clone(), args));
+                i += 1; // Consume the following parens node.
+            }
+            (other, _) => {
+                push_operand(to_expr(other)?);
             }
         }
         i += 1;
     }
 
-    // Simple left-to-right evaluation (no precedence for now)
     if operands.is_empty() {
         return Err(ConvertError::EmptySlot);
     }
 
-    let mut result = operands[0].clone();
-    for (i, op) in operators.iter().enumerate() {
-        if i + 1 < operands.len() {
-            let rhs = operands[i + 1].clone();
-            result = match op {
-                Operator::Add => Expr::Add(vec![result, rhs]),
-                Operator::Sub => Expr::Add(vec![result, Expr::Neg(Box::new(rhs))]),
-                Operator::Mul => Expr::Mul(vec![result, rhs]),
-                Operator::Div => Expr::Mul(vec![
-                    result,
-                    Expr::Pow(Box::new(rhs), Box::new(Expr::Integer(-1))),
-                ]),
-                Operator::Eq => Expr::Equation(Box::new(result), Box::new(rhs)),
-                _ => result, // Ignore comparison operators for now
-            };
+    // If there are adjacent operands but no explicit operators, treat as multiplication.
+    if operators.is_empty() {
+        return if operands.len() == 1 {
+            Ok(operands.pop().unwrap())
+        } else {
+            Ok(Expr::Mul(operands))
+        };
+    }
+
+    // Maintain operand/operator alignment by appending implicit multiplications
+    // when needed due malformed rows.
+    while operators.len() + 1 < operands.len() {
+        operators.push(Operator::Mul);
+    }
+
+    if operators.len() + 1 != operands.len() {
+        return Err(ConvertError::Unsupported);
+    }
+
+    // First pass: *, /
+    let mut idx = 0;
+    while idx < operators.len() {
+        match operators[idx] {
+            Operator::Mul | Operator::Div => {
+                let lhs = operands[idx].clone();
+                let rhs = operands[idx + 1].clone();
+                let merged = match operators[idx] {
+                    Operator::Mul => Expr::Mul(vec![lhs, rhs]),
+                    Operator::Div => Expr::Mul(vec![
+                        lhs,
+                        Expr::Pow(Box::new(rhs), Box::new(Expr::Integer(-1))),
+                    ]),
+                    _ => unreachable!(),
+                };
+                operands[idx] = merged;
+                operands.remove(idx + 1);
+                operators.remove(idx);
+            }
+            _ => idx += 1,
         }
     }
 
+    // Second pass: +, -, =
+    let mut result = operands[0].clone();
+    for (i, op) in operators.iter().enumerate() {
+        let rhs = operands[i + 1].clone();
+        result = match op {
+            Operator::Add => Expr::Add(vec![result, rhs]),
+            Operator::Sub => Expr::Add(vec![result, Expr::Neg(Box::new(rhs))]),
+            Operator::Eq => Expr::Equation(Box::new(result), Box::new(rhs)),
+            Operator::Lt => Expr::Inequality {
+                lhs: Box::new(result),
+                op: garcalc_cas::expr::InequalityOp::Lt,
+                rhs: Box::new(rhs),
+            },
+            Operator::Gt => Expr::Inequality {
+                lhs: Box::new(result),
+                op: garcalc_cas::expr::InequalityOp::Gt,
+                rhs: Box::new(rhs),
+            },
+            Operator::Le => Expr::Inequality {
+                lhs: Box::new(result),
+                op: garcalc_cas::expr::InequalityOp::Le,
+                rhs: Box::new(rhs),
+            },
+            Operator::Ge => Expr::Inequality {
+                lhs: Box::new(result),
+                op: garcalc_cas::expr::InequalityOp::Ge,
+                rhs: Box::new(rhs),
+            },
+            Operator::Ne => Expr::Inequality {
+                lhs: Box::new(result),
+                op: garcalc_cas::expr::InequalityOp::Ne,
+                rhs: Box::new(rhs),
+            },
+            Operator::Mul | Operator::Div | Operator::Comma => {
+                return Err(ConvertError::Unsupported);
+            }
+        };
+    }
+
     Ok(result)
+}
+
+fn parse_paren_args(inner: &MathBox) -> Result<Vec<Expr>, ConvertError> {
+    match inner {
+        MathBox::Row(items) => {
+            let mut args = Vec::new();
+            let mut current = Vec::new();
+
+            for item in items {
+                if matches!(item, MathBox::Operator(Operator::Comma)) {
+                    if current.is_empty() {
+                        return Err(ConvertError::MissingField(
+                            "function argument before comma".to_string(),
+                        ));
+                    }
+                    args.push(to_expr(&MathBox::Row(std::mem::take(&mut current)))?);
+                } else {
+                    current.push(item.clone());
+                }
+            }
+
+            if current.is_empty() && args.is_empty() {
+                return Err(ConvertError::EmptySlot);
+            }
+            if !current.is_empty() {
+                args.push(to_expr(&MathBox::Row(current))?);
+            }
+
+            Ok(args)
+        }
+        _ => Ok(vec![to_expr(inner)?]),
+    }
+}
+
+fn is_function_name(name: &str) -> bool {
+    matches!(
+        name,
+        "sin"
+            | "cos"
+            | "tan"
+            | "cot"
+            | "sec"
+            | "csc"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "ln"
+            | "log"
+            | "log10"
+            | "log2"
+            | "exp"
+            | "sqrt"
+            | "cbrt"
+            | "abs"
+            | "floor"
+            | "ceil"
+            | "round"
+            | "trunc"
+            | "sign"
+            | "gamma"
+            | "factorial"
+            | "diff"
+            | "derivative"
+            | "integrate"
+            | "integral"
+            | "limit"
+            | "lim"
+            | "solve"
+            | "sum"
+            | "product"
+            | "prod"
+            | "simplify"
+            | "expand"
+            | "factor"
+            | "substitute"
+            | "subs"
+            | "min"
+            | "max"
+            | "gcd"
+            | "lcm"
+            | "det"
+            | "determinant"
+            | "inv"
+            | "inverse"
+            | "transpose"
+            | "trace"
+            | "matmul"
+            | "identity"
+    )
 }
 
 fn format_float(f: f64) -> String {
@@ -725,6 +912,51 @@ mod tests {
                 "factorial".to_string(),
                 vec![Expr::Symbol(Symbol::new("n"))]
             )
+        );
+    }
+
+    #[test]
+    fn test_row_implicit_multiplication_converts_to_mul() {
+        let mb = MathBox::Row(vec![
+            MathBox::Number("2".to_string()),
+            MathBox::Symbol("x".to_string()),
+        ]);
+
+        let expr = to_expr(&mb).unwrap();
+        assert_eq!(
+            expr,
+            Expr::Mul(vec![Expr::Integer(2), Expr::Symbol(Symbol::new("x"))])
+        );
+    }
+
+    #[test]
+    fn test_row_symbol_parens_known_function_converts_to_func() {
+        let mb = MathBox::Row(vec![
+            MathBox::Symbol("sin".to_string()),
+            MathBox::Parens(Box::new(MathBox::Symbol("x".to_string()))),
+        ]);
+
+        let expr = to_expr(&mb).unwrap();
+        assert_eq!(
+            expr,
+            Expr::Func("sin".to_string(), vec![Expr::Symbol(Symbol::new("x"))])
+        );
+    }
+
+    #[test]
+    fn test_row_symbol_parens_unknown_name_stays_multiplication() {
+        let mb = MathBox::Row(vec![
+            MathBox::Symbol("f".to_string()),
+            MathBox::Parens(Box::new(MathBox::Symbol("x".to_string()))),
+        ]);
+
+        let expr = to_expr(&mb).unwrap();
+        assert_eq!(
+            expr,
+            Expr::Mul(vec![
+                Expr::Symbol(Symbol::new("f")),
+                Expr::Symbol(Symbol::new("x"))
+            ])
         );
     }
 

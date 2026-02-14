@@ -141,8 +141,10 @@ impl MathInput {
                 InputResult::Consumed
             }
             '(' => {
-                self.insert_at_cursor(MathBox::Parens(Box::new(MathBox::Slot)));
-                self.cursor.enter(0);
+                if !self.wrap_current_symbol_as_function_call() {
+                    self.insert_at_cursor(MathBox::Parens(Box::new(MathBox::Slot)));
+                    self.cursor.enter(0);
+                }
                 InputResult::Consumed
             }
             ')' => {
@@ -511,6 +513,94 @@ impl MathInput {
         }
 
         false
+    }
+
+    fn wrap_current_symbol_as_function_call(&mut self) -> bool {
+        let path = self.cursor.path.clone();
+        let symbol_name = match Self::get_node_at_path(&self.root, &path) {
+            Some(MathBox::Symbol(name)) => name.clone(),
+            _ => return false,
+        };
+
+        let normalized = symbol_name.to_ascii_lowercase();
+        if !Self::is_known_function_name(&normalized) {
+            return false;
+        }
+
+        if let Some(node) = Self::get_node_mut_at_path(&mut self.root, &path) {
+            *node = MathBox::Func {
+                name: normalized,
+                args: vec![MathBox::Slot],
+            };
+            self.cursor.enter(0);
+            self.cursor.offset = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_known_function_name(name: &str) -> bool {
+        matches!(
+            name,
+            "sin"
+                | "cos"
+                | "tan"
+                | "cot"
+                | "sec"
+                | "csc"
+                | "asin"
+                | "acos"
+                | "atan"
+                | "sinh"
+                | "cosh"
+                | "tanh"
+                | "asinh"
+                | "acosh"
+                | "atanh"
+                | "ln"
+                | "log"
+                | "log10"
+                | "log2"
+                | "exp"
+                | "sqrt"
+                | "cbrt"
+                | "abs"
+                | "floor"
+                | "ceil"
+                | "round"
+                | "trunc"
+                | "sign"
+                | "gamma"
+                | "factorial"
+                | "diff"
+                | "derivative"
+                | "integrate"
+                | "integral"
+                | "limit"
+                | "lim"
+                | "solve"
+                | "sum"
+                | "product"
+                | "prod"
+                | "simplify"
+                | "expand"
+                | "factor"
+                | "substitute"
+                | "subs"
+                | "min"
+                | "max"
+                | "gcd"
+                | "lcm"
+                | "det"
+                | "determinant"
+                | "inv"
+                | "inverse"
+                | "transpose"
+                | "trace"
+                | "matmul"
+                | "identity"
+        )
     }
 
     /// Try to exit current container (parens, etc.)
@@ -1665,6 +1755,22 @@ mod tests {
     }
 
     #[test]
+    fn test_integral_body_typed_function_parses_as_function_call() {
+        let mut input = MathInput::new();
+        run_command(&mut input, "int");
+
+        input.handle_char('s');
+        input.handle_char('i');
+        input.handle_char('n');
+        input.handle_char('(');
+        input.handle_char('x');
+        input.handle_char(')');
+
+        let expr = to_expr(input.mathbox()).expect("structured input should convert");
+        assert_eq!(expr.to_string(), "integrate(sin(x), x)");
+    }
+
+    #[test]
     fn test_diff_focus_and_tab_order_var_body() {
         let mut input = MathInput::new();
         run_command(&mut input, "diff");
@@ -1684,6 +1790,58 @@ mod tests {
 
         input.handle_char(')');
         assert_eq!(input.cursor_path(), &[0]);
+    }
+
+    #[test]
+    fn test_open_paren_after_function_name_wraps_as_func() {
+        let mut input = MathInput::new();
+        input.handle_char('s');
+        input.handle_char('i');
+        input.handle_char('n');
+        input.handle_char('(');
+
+        assert_eq!(input.cursor_path(), &[0, 0]);
+        if let MathBox::Row(items) = &input.root {
+            if let MathBox::Func { name, args } = &items[0] {
+                assert_eq!(name, "sin");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0], MathBox::Slot));
+            } else {
+                panic!("Expected function call");
+            }
+        } else {
+            panic!("Expected row root");
+        }
+    }
+
+    #[test]
+    fn test_open_paren_after_non_function_symbol_keeps_parens() {
+        let mut input = MathInput::new();
+        input.handle_char('f');
+        input.handle_char('(');
+
+        assert_eq!(input.cursor_path(), &[1, 0]);
+        if let MathBox::Row(items) = &input.root {
+            assert!(matches!(&items[0], MathBox::Symbol(s) if s == "f"));
+            assert!(matches!(&items[1], MathBox::Parens(_)));
+        } else {
+            panic!("Expected row root");
+        }
+    }
+
+    #[test]
+    fn test_open_paren_after_mixed_case_function_normalizes_name() {
+        let mut input = MathInput::new();
+        input.handle_char('S');
+        input.handle_char('i');
+        input.handle_char('N');
+        input.handle_char('(');
+
+        if let MathBox::Row(items) = &input.root {
+            assert!(matches!(&items[0], MathBox::Func { name, .. } if name == "sin"));
+        } else {
+            panic!("Expected row root");
+        }
     }
 
     #[test]

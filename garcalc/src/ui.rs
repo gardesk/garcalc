@@ -348,8 +348,8 @@ impl CalculatorUI {
 
     fn help_modal_rect(&self) -> Rect {
         let size = self.renderer.size();
-        let width = ((size.width as f64 * 0.72).clamp(460.0, 760.0)).round() as u32;
-        let height = ((size.height as f64 * 0.74).clamp(360.0, 560.0)).round() as u32;
+        let width = ((size.width as f64 * 0.82).clamp(520.0, 920.0)).round() as u32;
+        let height = ((size.height as f64 * 0.82).clamp(420.0, 700.0)).round() as u32;
         Rect::new(
             ((size.width - width) / 2) as i32,
             ((size.height - height) / 2) as i32,
@@ -430,83 +430,186 @@ impl CalculatorUI {
             &title_style,
         )?;
 
+        let sub_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground.with_alpha(0.75));
+        self.renderer.text(
+            "Shortcuts, structured math input, and mode controls",
+            (modal.x + 20) as f64,
+            (modal.y + 36) as f64,
+            &sub_style,
+        )?;
+
         let heading_style = TextStyle::new()
             .font_family(&self.theme.font_family)
             .font_size(13.0)
             .color(self.theme.selection_foreground);
         let body_style = TextStyle::new()
             .font_family(&self.theme.font_family)
-            .font_size(12.0)
+            .font_size(11.5)
             .color(self.theme.foreground.with_alpha(0.92));
         let hint_style = TextStyle::new()
             .font_family(&self.theme.font_family)
             .font_size(11.0)
             .color(self.theme.foreground.with_alpha(0.75));
 
-        let mut y = modal.y + 48;
-        let x = modal.x + 20;
-
+        let content_top = modal.y + 56;
+        let content_left = modal.x + 20;
+        let content_width = modal.width as i32 - 40;
+        let column_gap = 24;
+        let column_width = (content_width - column_gap) / 2;
+        let left_x = content_left;
+        let right_x = content_left + column_width + column_gap;
+        let divider_x = content_left + column_width + (column_gap / 2);
+        let divider_rect = Rect::new(
+            divider_x,
+            content_top + 2,
+            1,
+            modal.height.saturating_sub(94),
+        );
         self.renderer
-            .text("Common expressions", x as f64, y as f64, &heading_style)?;
-        y += 22;
-        for line in [
-            "2+2, sin(pi/2), sqrt(2), x^2 + 2*x + 1",
-            "diff(x^2, x), integrate(sin(x), x), solve(x^2-4, x)",
-            "sum(k, k, 1, n), product(k, k, 1, n)",
-        ] {
-            self.renderer
-                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
-            y += 18;
-        }
+            .fill_rect(divider_rect, self.theme.border.with_alpha(0.45))?;
 
-        y += 10;
-        self.renderer.text(
-            "Structured input commands",
-            x as f64,
-            y as f64,
+        let mut left_y = content_top;
+        let mut right_y = content_top;
+
+        self.draw_help_section(
+            left_x,
+            &mut left_y,
+            "Quick Start",
+            &[
+                "Enter evaluates the current expression.",
+                "Esc clears input (or closes this help).",
+                "Type '?' or click ? to toggle this panel.",
+                "F1 calculator, F2 graph, F3 graph 3D.",
+            ],
             &heading_style,
+            &body_style,
         )?;
-        y += 22;
-        for line in [
-            "Type '\\' then command and press Enter/Space.",
-            "\\frac  \\sqrt  \\sum  \\prod  \\diff  \\dint  \\lim  \\solve",
-        ] {
-            self.renderer
-                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
-            y += 18;
-        }
+        left_y += 6;
 
-        y += 10;
-        self.renderer
-            .text("Keybinds", x as f64, y as f64, &heading_style)?;
-        y += 22;
-        for line in [
-            "Enter evaluate, Tab/Shift+Tab move slot focus",
-            "Arrow keys move cursor, Up/Down recall history when input is blank",
-            "Ctrl+Up/Down force calculator history recall",
-            "F1 calculator, F2 graph, F3 3D, Esc closes this help",
-        ] {
-            self.renderer
-                .text(&format!("- {line}"), x as f64, y as f64, &body_style)?;
-            y += 18;
-        }
+        self.draw_help_section(
+            left_x,
+            &mut left_y,
+            "Structured Templates",
+            &[
+                "Type '\\' or ':' then command + Space/Enter.",
+                "\\frac \\sqrt \\nthroot \\abs \\matrix",
+                "\\sum \\prod \\int \\dint \\lim \\diff",
+                "\\solve \\sin \\cos \\tan \\ln \\exp",
+                "Tab / Shift+Tab moves between template slots.",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+        left_y += 6;
 
-        y += 8;
+        self.draw_help_section(
+            left_x,
+            &mut left_y,
+            "Editing And History",
+            &[
+                "Arrow keys move inside boxes and fractions.",
+                "Backspace/Delete remove chars or empty boxes.",
+                "Home/End jumps to start/end of input.",
+                "Use '^', '_', '/', '!' for power/sub/frac/factorial.",
+                "Up/Down on blank input recalls history.",
+                "Ctrl+Up/Down forces history browsing.",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+
+        self.draw_help_section(
+            right_x,
+            &mut right_y,
+            "Calculator Examples",
+            &[
+                "2+2",
+                "diff(x^2, x)",
+                "integrate(sin(x), x)",
+                "sum(k^2+k, k, 1, n)",
+                "solve(x^2-4, x)",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+        right_y += 6;
+
+        self.draw_help_section(
+            right_x,
+            &mut right_y,
+            "Graph Mode",
+            &[
+                "Enter y=... (or expression) to add a curve.",
+                "Left-drag pans, mouse wheel zooms.",
+                "Right-click toggles trace cursor.",
+                "Ctrl+R reset view, Ctrl+C clear, Ctrl+T trace.",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+        right_y += 6;
+
+        self.draw_help_section(
+            right_x,
+            &mut right_y,
+            "3D Mode",
+            &[
+                "Enter z=... (or expression) to add a surface.",
+                "Left-drag rotates camera, mouse wheel zooms.",
+                "Ctrl+R reset camera, Ctrl+C clear surfaces.",
+                "Parametric surface: (x(u,v), y(u,v), z(u,v)).",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+        right_y += 6;
+
+        self.draw_help_section(
+            right_x,
+            &mut right_y,
+            "Behavior Notes",
+            &[
+                "Pretty output renders many symbolic forms directly.",
+                "Definite integrals with numeric bounds evaluate numerically.",
+                "Hard symbolic forms may remain as integrate(...).",
+                "Click outside modal (or x) to close.",
+            ],
+            &heading_style,
+            &body_style,
+        )?;
+
         let mode_hint = match mode {
-            Mode::Graph => "Graph mode: drag to pan, scroll to zoom, right-click trace toggle.",
-            Mode::Graph3D => "3D mode: drag to rotate camera, scroll to zoom depth.",
-            _ => "Calculator mode: use pretty templates, then evaluate with Enter.",
+            Mode::Graph => "Active mode: Graph.",
+            Mode::Graph3D => "Active mode: Graph 3D.",
+            _ => "Active mode: Calculator.",
         };
+        let hint_y = modal.bottom() - 24;
         self.renderer
-            .text(mode_hint, x as f64, y as f64, &hint_style)?;
-        y += 20;
-        self.renderer.text(
-            "Tip: click outside this panel (or x) to close.",
-            x as f64,
-            y as f64,
-            &hint_style,
-        )?;
+            .text(mode_hint, (modal.x + 20) as f64, hint_y as f64, &hint_style)?;
 
+        Ok(())
+    }
+
+    fn draw_help_section(
+        &mut self,
+        x: i32,
+        y: &mut i32,
+        heading: &str,
+        lines: &[&str],
+        heading_style: &TextStyle,
+        body_style: &TextStyle,
+    ) -> Result<()> {
+        self.renderer
+            .text(heading, x as f64, *y as f64, heading_style)?;
+        *y += 20;
+        for line in lines {
+            self.renderer
+                .text(&format!("- {line}"), x as f64, *y as f64, body_style)?;
+            *y += 16;
+        }
         Ok(())
     }
 
