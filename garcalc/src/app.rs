@@ -1,11 +1,16 @@
 //! Application state and event loop
 
 use anyhow::Result;
-use garcalc_cas::{parser, Evaluator};
+use garcalc_cas::{Evaluator, parser};
 use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
-use gartk_core::{InputEvent, Key, MouseButton};
+use garcalc_math::input::SpecialKey;
+use garcalc_math::{
+    ConvertError, InputResult as MathInputResult, MathBox, MathInput, from_expr, to_expr,
+};
+use gartk_core::{InputEvent, Key, Modifiers, MouseButton};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::ui::CalculatorUI;
@@ -30,10 +35,16 @@ pub struct App {
     graph3d: Graph3D,
     /// Current mode
     mode: Mode,
-    /// Input text
+    /// Plain text input (used in graph modes)
     input: String,
     /// Cursor position
     cursor: usize,
+    /// Structured input (used in calculator mode)
+    math_input: MathInput,
+    /// Structured expression history for calculator input recall
+    calc_history: Vec<MathBox>,
+    /// History navigation index in calculator mode
+    calc_history_index: Option<usize>,
     /// Calculation history
     history: Vec<HistoryEntry>,
     /// History navigation index
@@ -42,6 +53,10 @@ pub struct App {
     popup_mode: bool,
     /// Whether app should quit
     should_quit: bool,
+    /// Whether the cursor is currently visible (blink state)
+    cursor_visible: bool,
+    /// Last time the cursor blink state toggled
+    last_cursor_blink: Instant,
     /// Whether we have focus
     has_focus: bool,
     /// Mouse drag state for graph panning
@@ -104,10 +119,15 @@ impl App {
             mode,
             input: String::new(),
             cursor: 0,
+            math_input: MathInput::new(),
+            calc_history: Vec::new(),
+            calc_history_index: None,
             history: Vec::new(),
             history_index: None,
             popup_mode: popup,
             should_quit: false,
+            cursor_visible: true,
+            last_cursor_blink: Instant::now(),
             has_focus: false,
             drag_start: None,
             config,
@@ -124,7 +144,8 @@ impl App {
         event_loop.run(|ev, event| {
             match event {
                 InputEvent::Key(key_event) if key_event.pressed => {
-                    self.handle_key(&key_event.key, key_event.modifiers.ctrl);
+                    self.handle_key(&key_event.key, key_event.modifiers);
+                    self.reset_cursor_blink();
                     ev.request_redraw();
                 }
                 InputEvent::MousePress(mouse_ev) => {
@@ -209,6 +230,7 @@ impl App {
                 }
                 InputEvent::FocusIn => {
                     self.has_focus = true;
+                    self.reset_cursor_blink();
                 }
                 InputEvent::FocusOut => {
                     if self.has_focus && self.popup_mode {
@@ -216,7 +238,9 @@ impl App {
                     }
                 }
                 InputEvent::Idle => {
-                    // Handle idle - could animate cursor here
+                    if self.tick_cursor_blink() {
+                        ev.request_redraw();
+                    }
                 }
                 _ => {}
             }
@@ -232,52 +256,91 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: &Key, ctrl: bool) {
+    fn handle_key(&mut self, key: &Key, modifiers: Modifiers) {
+        let ctrl = modifiers.ctrl;
+
+        // Global keys
         match key {
             Key::Escape => {
                 if self.popup_mode {
                     self.should_quit = true;
+                } else if self.mode == Mode::Calculator {
+                    if matches!(
+                        self.math_input.handle_key(SpecialKey::Escape),
+                        MathInputResult::Cancel
+                    ) {
+                        self.math_input.clear();
+                    }
+                    self.calc_history_index = None;
                 } else {
-                    // Clear input in standalone mode
                     self.input.clear();
                     self.cursor = 0;
                 }
+                return;
             }
             Key::Return => {
-                self.evaluate();
+                if self.mode == Mode::Calculator {
+                    let result = self.math_input.handle_key(SpecialKey::Enter);
+                    match result {
+                        MathInputResult::Evaluate => self.evaluate(),
+                        MathInputResult::Consumed => {
+                            self.history_index = None;
+                            self.calc_history_index = None;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.evaluate();
+                }
+                return;
             }
-            // Mode switching with F-keys
             Key::F1 => {
                 self.mode = Mode::Calculator;
+                return;
             }
             Key::F2 => {
                 self.mode = Mode::Graph;
+                return;
             }
             Key::F3 => {
                 self.mode = Mode::Graph3D;
+                return;
             }
-            // Graph-specific keys (2D)
+            _ => {}
+        }
+
+        // Graph shortcuts
+        match key {
             Key::Char('r') if ctrl && self.mode == Mode::Graph => {
-                // Reset viewport
                 self.graph.reset_viewport();
+                return;
             }
             Key::Char('c') if ctrl && self.mode == Mode::Graph => {
-                // Clear functions
                 self.graph.clear_functions();
+                return;
             }
             Key::Char('t') if ctrl && self.mode == Mode::Graph => {
-                // Toggle trace
                 self.graph.trace_enabled = !self.graph.trace_enabled;
+                return;
             }
-            // Graph3D-specific keys
             Key::Char('r') if ctrl && self.mode == Mode::Graph3D => {
-                // Reset camera
                 self.graph3d.reset_camera();
+                return;
             }
             Key::Char('c') if ctrl && self.mode == Mode::Graph3D => {
-                // Clear surfaces
                 self.graph3d.clear_surfaces();
+                return;
             }
+            _ => {}
+        }
+
+        if self.mode == Mode::Calculator {
+            self.handle_calculator_input(key, modifiers);
+            return;
+        }
+
+        // Plain text editor for graph/3D modes
+        match key {
             Key::Backspace => {
                 if self.cursor > 0 {
                     self.cursor -= 1;
@@ -291,7 +354,6 @@ impl App {
             }
             Key::Left => {
                 if ctrl {
-                    // Move to previous word
                     while self.cursor > 0 && self.input.chars().nth(self.cursor - 1) == Some(' ') {
                         self.cursor -= 1;
                     }
@@ -304,7 +366,6 @@ impl App {
             }
             Key::Right => {
                 if ctrl {
-                    // Move to next word
                     let len = self.input.len();
                     while self.cursor < len && self.input.chars().nth(self.cursor) != Some(' ') {
                         self.cursor += 1;
@@ -323,7 +384,6 @@ impl App {
                 self.cursor = self.input.len();
             }
             Key::Up => {
-                // Navigate history
                 if !self.history.is_empty() {
                     match self.history_index {
                         None => {
@@ -367,7 +427,175 @@ impl App {
         }
     }
 
+    fn handle_calculator_input(&mut self, key: &Key, modifiers: Modifiers) {
+        if !modifiers.ctrl && !modifiers.alt && !modifiers.super_key {
+            match key {
+                // Plain Up/Down should recall history when input is blank.
+                // This keeps template navigation intact while actively editing.
+                Key::Up if self.is_blank_math_input() => {
+                    self.recall_calculator_history(true);
+                    return;
+                }
+                Key::Down if self.is_blank_math_input() => {
+                    self.recall_calculator_history(false);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if modifiers.ctrl {
+            match key {
+                Key::Up => {
+                    self.recall_calculator_history(true);
+                    return;
+                }
+                Key::Down => {
+                    self.recall_calculator_history(false);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let result = match key {
+            Key::Left => self.math_input.handle_key(SpecialKey::Left),
+            Key::Right => self.math_input.handle_key(SpecialKey::Right),
+            Key::Up => self.math_input.handle_key(SpecialKey::Up),
+            Key::Down => self.math_input.handle_key(SpecialKey::Down),
+            Key::Tab => {
+                if modifiers.shift {
+                    self.math_input.handle_key(SpecialKey::ShiftTab)
+                } else {
+                    self.math_input.handle_key(SpecialKey::Tab)
+                }
+            }
+            Key::Backspace => self.math_input.handle_key(SpecialKey::Backspace),
+            Key::Delete => self.math_input.handle_key(SpecialKey::Delete),
+            Key::Home => self.math_input.handle_key(SpecialKey::Home),
+            Key::End => self.math_input.handle_key(SpecialKey::End),
+            // Keep AltGr-generated printable chars (notably '\') usable in calculator mode.
+            Key::Char(c) if !modifiers.ctrl && !modifiers.super_key => {
+                self.math_input.handle_char(*c)
+            }
+            Key::Space if !modifiers.ctrl && !modifiers.super_key => {
+                self.math_input.handle_char(' ')
+            }
+            _ => MathInputResult::Ignored,
+        };
+
+        if !matches!(result, MathInputResult::Ignored) {
+            self.history_index = None;
+            self.calc_history_index = None;
+        }
+    }
+
+    fn is_blank_math_input(&self) -> bool {
+        match self.math_input.mathbox() {
+            MathBox::Row(items) => {
+                items.is_empty() || items.iter().all(|item| matches!(item, MathBox::Slot))
+            }
+            MathBox::Slot => true,
+            _ => false,
+        }
+    }
+
+    fn editable_math_input(mathbox: MathBox) -> MathInput {
+        let root = match mathbox {
+            MathBox::Row(mut items) => {
+                if items.is_empty() || !matches!(items.last(), Some(MathBox::Slot)) {
+                    items.push(MathBox::Slot);
+                }
+                MathBox::Row(items)
+            }
+            other => MathBox::Row(vec![other, MathBox::Slot]),
+        };
+
+        let mut input = MathInput::from_mathbox(root);
+        if let MathBox::Row(items) = &input.root {
+            if !items.is_empty() {
+                input.cursor.enter(items.len() - 1);
+            }
+        }
+        input
+    }
+
+    fn recall_calculator_history(&mut self, older: bool) {
+        if self.calc_history.is_empty() {
+            return;
+        }
+
+        let len = self.calc_history.len();
+        let new_index = match (self.calc_history_index, older) {
+            (None, true) => Some(len - 1),
+            (None, false) => None,
+            (Some(idx), true) if idx > 0 => Some(idx - 1),
+            (Some(idx), true) => Some(idx),
+            (Some(idx), false) if idx + 1 < len => Some(idx + 1),
+            (Some(_), false) => None,
+        };
+
+        if let Some(idx) = new_index {
+            self.calc_history_index = Some(idx);
+            self.math_input = Self::editable_math_input(self.calc_history[idx].clone());
+            self.history_index = None;
+        } else {
+            self.calc_history_index = None;
+            self.math_input.clear();
+        }
+    }
+
+    fn evaluate_calculator_input(&mut self) {
+        let expr = match to_expr(self.math_input.mathbox()) {
+            Ok(expr) => expr,
+            Err(ConvertError::EmptySlot) => {
+                self.history.push(HistoryEntry {
+                    input: "<structured input>".to_string(),
+                    result: String::new(),
+                    error: Some(
+                        "Expression is incomplete: fill all empty boxes before evaluating."
+                            .to_string(),
+                    ),
+                });
+                self.history_index = None;
+                self.calc_history_index = None;
+                return;
+            }
+            Err(err) => {
+                self.history.push(HistoryEntry {
+                    input: "<structured input>".to_string(),
+                    result: String::new(),
+                    error: Some(format!("Input error: {err}")),
+                });
+                self.history_index = None;
+                self.calc_history_index = None;
+                return;
+            }
+        };
+
+        let input = expr.to_string();
+        let (result, error) = match self.evaluator.eval(&expr) {
+            Ok(val) => (val.to_string(), None),
+            Err(e) => (String::new(), Some(e.to_string())),
+        };
+
+        self.history.push(HistoryEntry {
+            input,
+            result,
+            error,
+        });
+        self.calc_history.push(from_expr(&expr));
+        self.math_input.clear();
+        self.history_index = None;
+        self.calc_history_index = None;
+    }
+
     fn evaluate(&mut self) {
+        if self.mode == Mode::Calculator {
+            self.evaluate_calculator_input();
+            return;
+        }
+
         if self.input.is_empty() {
             return;
         }
@@ -410,7 +638,10 @@ impl App {
                             self.graph.add_implicit(expr);
                             self.history.push(HistoryEntry {
                                 input: input.clone(),
-                                result: format!("Added implicit curve {}", self.graph.functions.len()),
+                                result: format!(
+                                    "Added implicit curve {}",
+                                    self.graph.functions.len()
+                                ),
                                 error: None,
                             });
                         }
@@ -453,7 +684,10 @@ impl App {
             } else {
                 // Try to parse as explicit surface (3D: z = f(x, y))
                 // Support formats: "z = expr", "expr" (implicit z=)
-                let expr_str = if let Some(rest) = input.strip_prefix("z=").or_else(|| input.strip_prefix("z =")) {
+                let expr_str = if let Some(rest) = input
+                    .strip_prefix("z=")
+                    .or_else(|| input.strip_prefix("z ="))
+                {
                     rest.trim()
                 } else {
                     input.trim()
@@ -504,7 +738,9 @@ impl App {
     /// Formats: "(sin(t), cos(t))" or "sin(t), cos(t)" or "(sin(t), cos(t), 0, 2*pi)"
     fn parse_parametric(&mut self, input: &str) {
         // Remove outer parentheses if present
-        let inner = input.trim().strip_prefix('(')
+        let inner = input
+            .trim()
+            .strip_prefix('(')
             .and_then(|s| s.strip_suffix(')'))
             .unwrap_or(input.trim());
 
@@ -515,7 +751,9 @@ impl App {
             self.history.push(HistoryEntry {
                 input: input.to_string(),
                 result: String::new(),
-                error: Some("Parametric curve needs at least two components: x(t), y(t)".to_string()),
+                error: Some(
+                    "Parametric curve needs at least two components: x(t), y(t)".to_string(),
+                ),
             });
             return;
         }
@@ -526,24 +764,28 @@ impl App {
 
         // Optional t range (default 0 to 2*pi)
         let (t_min, t_max) = if parts.len() >= 4 {
-            let min_result = parser::parse(parts[2].trim())
-                .and_then(|e| {
-                    let eval = Evaluator::new();
-                    eval.eval(&e).ok().and_then(|v| match v {
+            let min_result = parser::parse(parts[2].trim()).and_then(|e| {
+                let eval = Evaluator::new();
+                eval.eval(&e)
+                    .ok()
+                    .and_then(|v| match v {
                         garcalc_cas::Expr::Integer(n) => Some(n as f64),
                         garcalc_cas::Expr::Float(f) => Some(f),
                         _ => None,
-                    }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
-                });
-            let max_result = parser::parse(parts[3].trim())
-                .and_then(|e| {
-                    let eval = Evaluator::new();
-                    eval.eval(&e).ok().and_then(|v| match v {
+                    })
+                    .ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+            });
+            let max_result = parser::parse(parts[3].trim()).and_then(|e| {
+                let eval = Evaluator::new();
+                eval.eval(&e)
+                    .ok()
+                    .and_then(|v| match v {
                         garcalc_cas::Expr::Integer(n) => Some(n as f64),
                         garcalc_cas::Expr::Float(f) => Some(f),
                         _ => None,
-                    }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
-                });
+                    })
+                    .ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+            });
             match (min_result, max_result) {
                 (Ok(min), Ok(max)) => (min, max),
                 _ => (0.0, std::f64::consts::TAU),
@@ -574,7 +816,9 @@ impl App {
     /// Parse and add a parametric surface
     /// Format: "(x(u,v), y(u,v), z(u,v))" or with ranges "(x, y, z, u_min, u_max, v_min, v_max)"
     fn parse_parametric_surface(&mut self, input: &str) {
-        let inner = input.trim().strip_prefix('(')
+        let inner = input
+            .trim()
+            .strip_prefix('(')
             .and_then(|s| s.strip_suffix(')'))
             .unwrap_or(input.trim());
 
@@ -584,7 +828,9 @@ impl App {
             self.history.push(HistoryEntry {
                 input: input.to_string(),
                 result: String::new(),
-                error: Some("Parametric surface needs three components: x(u,v), y(u,v), z(u,v)".to_string()),
+                error: Some(
+                    "Parametric surface needs three components: x(u,v), y(u,v), z(u,v)".to_string(),
+                ),
             });
             return;
         }
@@ -599,22 +845,31 @@ impl App {
                 parser::parse(s.trim())
                     .and_then(|e| {
                         let eval = Evaluator::new();
-                        eval.eval(&e).ok().and_then(|v| match v {
-                            garcalc_cas::Expr::Integer(n) => Some(n as f64),
-                            garcalc_cas::Expr::Float(f) => Some(f),
-                            _ => None,
-                        }).ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
+                        eval.eval(&e)
+                            .ok()
+                            .and_then(|v| match v {
+                                garcalc_cas::Expr::Integer(n) => Some(n as f64),
+                                garcalc_cas::Expr::Float(f) => Some(f),
+                                _ => None,
+                            })
+                            .ok_or(garcalc_cas::CasError::Type("expected number".to_string()))
                     })
                     .unwrap_or(0.0)
             };
-            (parse_num(parts[3]), parse_num(parts[4]), parse_num(parts[5]), parse_num(parts[6]))
+            (
+                parse_num(parts[3]),
+                parse_num(parts[4]),
+                parse_num(parts[5]),
+                parse_num(parts[6]),
+            )
         } else {
             (0.0, std::f64::consts::TAU, 0.0, std::f64::consts::TAU)
         };
 
         match (x_result, y_result, z_result) {
             (Ok(x_expr), Ok(y_expr), Ok(z_expr)) => {
-                self.graph3d.add_parametric(x_expr, y_expr, z_expr, (u_min, u_max), (v_min, v_max));
+                self.graph3d
+                    .add_parametric(x_expr, y_expr, z_expr, (u_min, u_max), (v_min, v_max));
                 self.history.push(HistoryEntry {
                     input: input.to_string(),
                     result: format!("Added parametric surface {}", self.graph3d.surfaces.len()),
@@ -632,7 +887,39 @@ impl App {
     }
 
     fn render(&mut self) -> Result<()> {
-        self.ui.render(&self.input, self.cursor, &self.history, self.mode, &self.graph, &self.graph3d)?;
+        let math_input = if self.mode == Mode::Calculator {
+            Some(&self.math_input)
+        } else {
+            None
+        };
+        self.ui.render(
+            &self.input,
+            self.cursor,
+            self.cursor_visible,
+            math_input,
+            &self.history,
+            self.mode,
+            &self.graph,
+            &self.graph3d,
+        )?;
         Ok(())
+    }
+
+    fn reset_cursor_blink(&mut self) {
+        self.cursor_visible = true;
+        self.last_cursor_blink = Instant::now();
+    }
+
+    fn tick_cursor_blink(&mut self) -> bool {
+        const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(550);
+
+        let now = Instant::now();
+        if now.duration_since(self.last_cursor_blink) >= CURSOR_BLINK_INTERVAL {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_cursor_blink = now;
+            return true;
+        }
+
+        false
     }
 }
