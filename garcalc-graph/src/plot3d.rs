@@ -40,8 +40,8 @@ impl Camera3D {
     /// Rotate the camera by delta angles
     pub fn rotate(&mut self, d_azimuth: f64, d_elevation: f64) {
         self.azimuth += d_azimuth;
-        self.elevation = (self.elevation + d_elevation)
-            .clamp(-89.0_f64.to_radians(), 89.0_f64.to_radians());
+        self.elevation =
+            (self.elevation + d_elevation).clamp(-89.0_f64.to_radians(), 89.0_f64.to_radians());
     }
 
     /// Zoom by a factor
@@ -107,7 +107,12 @@ impl Colormap {
             Colormap::Coolwarm => coolwarm(t),
             Colormap::Grayscale => {
                 let v = (t * 255.0) as u8;
-                Color { r: v, g: v, b: v, a: 255 }
+                Color {
+                    r: v,
+                    g: v,
+                    b: v,
+                    a: 255,
+                }
             }
         }
     }
@@ -158,9 +163,24 @@ pub struct Plot3DConfig {
 impl Default for Plot3DConfig {
     fn default() -> Self {
         Self {
-            background: Color { r: 30, g: 30, b: 46, a: 255 },
-            axis_color: Color { r: 166, g: 173, b: 200, a: 255 },
-            wireframe_color: Color { r: 100, g: 100, b: 120, a: 255 },
+            background: Color {
+                r: 30,
+                g: 30,
+                b: 46,
+                a: 255,
+            },
+            axis_color: Color {
+                r: 166,
+                g: 173,
+                b: 200,
+                a: 255,
+            },
+            wireframe_color: Color {
+                r: 100,
+                g: 100,
+                b: 120,
+                a: 255,
+            },
             colormap: Colormap::Viridis,
             render_mode: RenderMode::FilledWithWireframe,
             grid_lines: 40,
@@ -256,7 +276,11 @@ impl Graph3D {
             forward.0 * world_up.1 - forward.1 * world_up.0,
         );
         let right_len = (right.0 * right.0 + right.1 * right.1 + right.2 * right.2).sqrt();
-        let right = (right.0 / right_len, right.1 / right_len, right.2 / right_len);
+        let right = (
+            right.0 / right_len,
+            right.1 / right_len,
+            right.2 / right_len,
+        );
 
         // Actual up = right x forward
         let up = (
@@ -361,9 +385,17 @@ impl Graph3D {
             Surface3D::Explicit { expr, x_var, y_var } => {
                 self.draw_explicit_surface(ctx, expr, x_var, y_var, width, height);
             }
-            Surface3D::Parametric { x_expr, y_expr, z_expr, u_var, v_var, u_range, v_range } => {
+            Surface3D::Parametric {
+                x_expr,
+                y_expr,
+                z_expr,
+                u_var,
+                v_var,
+                u_range,
+                v_range,
+            } => {
                 self.draw_parametric_surface(
-                    ctx, x_expr, y_expr, z_expr, u_var, v_var, *u_range, *v_range, width, height
+                    ctx, x_expr, y_expr, z_expr, u_var, v_var, *u_range, *v_range, width, height,
                 );
             }
         }
@@ -446,8 +478,8 @@ impl Graph3D {
                     let cy = (p00.1 + p10.1 + p11.1 + p01.1) / 4.0;
                     let cz = (p00.2 + p10.2 + p11.2 + p01.2) / 4.0;
                     let depth = (cx - cam_pos.0).powi(2)
-                              + (cy - cam_pos.1).powi(2)
-                              + (cz - cam_pos.2).powi(2);
+                        + (cy - cam_pos.1).powi(2)
+                        + (cz - cam_pos.2).powi(2);
 
                     quads.push(Quad {
                         corners: [p00, p10, p11, p01],
@@ -459,11 +491,16 @@ impl Graph3D {
         }
 
         // Sort by depth (painter's algorithm - far to near)
-        quads.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+        quads.sort_by(|a, b| {
+            b.depth
+                .partial_cmp(&a.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Draw quads
         for quad in &quads {
-            let corners: Vec<(f64, f64)> = quad.corners
+            let corners: Vec<(f64, f64)> = quad
+                .corners
                 .iter()
                 .map(|p| self.project(p.0, p.1, p.2, width, height))
                 .collect();
@@ -532,7 +569,9 @@ impl Graph3D {
                 let z_result = evaluator.eval(z_expr);
 
                 if let (Ok(xr), Ok(yr), Ok(zr)) = (x_result, y_result, z_result) {
-                    if let (Ok(x), Ok(y), Ok(z)) = (expr_to_f64(&xr), expr_to_f64(&yr), expr_to_f64(&zr)) {
+                    if let (Ok(x), Ok(y), Ok(z)) =
+                        (expr_to_f64(&xr), expr_to_f64(&yr), expr_to_f64(&zr))
+                    {
                         if x.is_finite() && y.is_finite() && z.is_finite() {
                             z_min = z_min.min(z);
                             z_max = z_max.max(z);
@@ -574,8 +613,8 @@ impl Graph3D {
                     let cy = (p00.1 + p10.1 + p11.1 + p01.1) / 4.0;
                     let cz = (p00.2 + p10.2 + p11.2 + p01.2) / 4.0;
                     let depth = (cx - cam_pos.0).powi(2)
-                              + (cy - cam_pos.1).powi(2)
-                              + (cz - cam_pos.2).powi(2);
+                        + (cy - cam_pos.1).powi(2)
+                        + (cz - cam_pos.2).powi(2);
 
                     quads.push(Quad {
                         corners: [p00, p10, p11, p01],
@@ -586,10 +625,15 @@ impl Graph3D {
             }
         }
 
-        quads.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+        quads.sort_by(|a, b| {
+            b.depth
+                .partial_cmp(&a.depth)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for quad in &quads {
-            let corners: Vec<(f64, f64)> = quad.corners
+            let corners: Vec<(f64, f64)> = quad
+                .corners
                 .iter()
                 .map(|p| self.project(p.0, p.1, p.2, width, height))
                 .collect();
@@ -675,21 +719,13 @@ fn plasma(t: f64) -> Color {
 
 fn coolwarm(t: f64) -> Color {
     // Blue (cool) to red (warm)
-    let r = if t < 0.5 {
-        0.2 + t * 1.6
-    } else {
-        1.0
-    };
+    let r = if t < 0.5 { 0.2 + t * 1.6 } else { 1.0 };
     let g = if t < 0.5 {
         0.2 + t * 1.2
     } else {
         0.8 - (t - 0.5) * 1.6
     };
-    let b = if t < 0.5 {
-        1.0
-    } else {
-        1.0 - (t - 0.5) * 1.6
-    };
+    let b = if t < 0.5 { 1.0 } else { 1.0 - (t - 0.5) * 1.6 };
     Color {
         r: (r.clamp(0.0, 1.0) * 255.0) as u8,
         g: (g.clamp(0.0, 1.0) * 255.0) as u8,

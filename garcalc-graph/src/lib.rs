@@ -6,8 +6,8 @@
 pub mod plot2d;
 pub mod plot3d;
 
-pub use plot2d::{Graph2D, PlotConfig, CURVE_COLORS};
-pub use plot3d::{Graph3D, Plot3DConfig, Camera3D, Viewport3D, Colormap, RenderMode};
+pub use plot2d::{CURVE_COLORS, Graph2D, PlotConfig};
+pub use plot3d::{Camera3D, Colormap, Graph3D, Plot3DConfig, RenderMode, Viewport3D};
 
 use garcalc_cas::Expr;
 use serde::{Deserialize, Serialize};
@@ -22,10 +22,30 @@ pub struct Color {
 }
 
 impl Color {
-    pub const RED: Self = Self { r: 255, g: 0, b: 0, a: 255 };
-    pub const BLUE: Self = Self { r: 0, g: 0, b: 255, a: 255 };
-    pub const GREEN: Self = Self { r: 0, g: 128, b: 0, a: 255 };
-    pub const BLACK: Self = Self { r: 0, g: 0, b: 0, a: 255 };
+    pub const RED: Self = Self {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const BLUE: Self = Self {
+        r: 0,
+        g: 0,
+        b: 255,
+        a: 255,
+    };
+    pub const GREEN: Self = Self {
+        r: 0,
+        g: 128,
+        b: 0,
+        a: 255,
+    };
+    pub const BLACK: Self = Self {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
 }
 
 /// Line style for curves

@@ -40,10 +40,30 @@ pub struct PlotConfig {
 impl Default for PlotConfig {
     fn default() -> Self {
         Self {
-            background: Color { r: 30, g: 30, b: 46, a: 255 },
-            axis_color: Color { r: 166, g: 173, b: 200, a: 255 },
-            grid_color: Color { r: 69, g: 71, b: 90, a: 255 },
-            label_color: Color { r: 166, g: 173, b: 200, a: 255 },
+            background: Color {
+                r: 30,
+                g: 30,
+                b: 46,
+                a: 255,
+            },
+            axis_color: Color {
+                r: 166,
+                g: 173,
+                b: 200,
+                a: 255,
+            },
+            grid_color: Color {
+                r: 69,
+                g: 71,
+                b: 90,
+                a: 255,
+            },
+            label_color: Color {
+                r: 166,
+                g: 173,
+                b: 200,
+                a: 255,
+            },
             show_grid: true,
             show_labels: true,
             curve_width: 2.0,
@@ -56,12 +76,42 @@ impl Default for PlotConfig {
 
 /// Default curve colors (catppuccin palette)
 pub const CURVE_COLORS: [Color; 6] = [
-    Color { r: 137, g: 180, b: 250, a: 255 }, // blue
-    Color { r: 166, g: 227, b: 161, a: 255 }, // green
-    Color { r: 249, g: 226, b: 175, a: 255 }, // yellow
-    Color { r: 243, g: 139, b: 168, a: 255 }, // red
-    Color { r: 203, g: 166, b: 247, a: 255 }, // mauve
-    Color { r: 148, g: 226, b: 213, a: 255 }, // teal
+    Color {
+        r: 137,
+        g: 180,
+        b: 250,
+        a: 255,
+    }, // blue
+    Color {
+        r: 166,
+        g: 227,
+        b: 161,
+        a: 255,
+    }, // green
+    Color {
+        r: 249,
+        g: 226,
+        b: 175,
+        a: 255,
+    }, // yellow
+    Color {
+        r: 243,
+        g: 139,
+        b: 168,
+        a: 255,
+    }, // red
+    Color {
+        r: 203,
+        g: 166,
+        b: 247,
+        a: 255,
+    }, // mauve
+    Color {
+        r: 148,
+        g: 226,
+        b: 213,
+        a: 255,
+    }, // teal
 ];
 
 /// 2D graph state and renderer
@@ -351,13 +401,29 @@ impl Graph2D {
 
     fn draw_function(&self, ctx: &Context, func: &Plottable, width: u32, height: u32) {
         match func {
-            Plottable::Explicit2D { expr, x_var, color, style } => {
+            Plottable::Explicit2D {
+                expr,
+                x_var,
+                color,
+                style,
+            } => {
                 self.draw_explicit(ctx, expr, x_var, *color, *style, width, height);
             }
-            Plottable::Implicit2D { expr, x_var, y_var, color } => {
+            Plottable::Implicit2D {
+                expr,
+                x_var,
+                y_var,
+                color,
+            } => {
                 self.draw_implicit(ctx, expr, x_var, y_var, *color, width, height);
             }
-            Plottable::Parametric2D { x_expr, y_expr, t_var, t_range, color } => {
+            Plottable::Parametric2D {
+                x_expr,
+                y_expr,
+                t_var,
+                t_range,
+                color,
+            } => {
                 self.draw_parametric(ctx, x_expr, y_expr, t_var, *t_range, *color, width, height);
             }
             _ => {}
@@ -400,7 +466,8 @@ impl Graph2D {
 
             if let Ok(result) = evaluator.eval(expr) {
                 if let Ok(math_y) = expr_to_f64(&result) {
-                    if math_y.is_finite() && math_y >= self.viewport.y_min - x_range
+                    if math_y.is_finite()
+                        && math_y >= self.viewport.y_min - x_range
                         && math_y <= self.viewport.y_max + x_range
                     {
                         let (sx, sy) = self.math_to_screen(math_x, math_y, width, height);
@@ -543,18 +610,35 @@ impl Graph2D {
                 let s11 = v11 >= 0.0;
 
                 // Build case index (4-bit)
-                let case = (s00 as u8) | ((s10 as u8) << 1) | ((s01 as u8) << 2) | ((s11 as u8) << 3);
+                let case =
+                    (s00 as u8) | ((s10 as u8) << 1) | ((s01 as u8) << 2) | ((s11 as u8) << 3);
 
                 // Linear interpolation to find zero crossing on an edge
                 let interp = |va: f64, vb: f64| -> f64 {
-                    if (va - vb).abs() < 1e-15 { 0.5 } else { va / (va - vb) }
+                    if (va - vb).abs() < 1e-15 {
+                        0.5
+                    } else {
+                        va / (va - vb)
+                    }
                 };
 
                 // Edge midpoints where contour crosses
-                let e_bottom = || { let t = interp(v00, v10); (x0 + t * dx, y0) };
-                let e_top = || { let t = interp(v01, v11); (x0 + t * dx, y1) };
-                let e_left = || { let t = interp(v00, v01); (x0, y0 + t * dy) };
-                let e_right = || { let t = interp(v10, v11); (x1, y0 + t * dy) };
+                let e_bottom = || {
+                    let t = interp(v00, v10);
+                    (x0 + t * dx, y0)
+                };
+                let e_top = || {
+                    let t = interp(v01, v11);
+                    (x0 + t * dx, y1)
+                };
+                let e_left = || {
+                    let t = interp(v00, v01);
+                    (x0, y0 + t * dy)
+                };
+                let e_right = || {
+                    let t = interp(v10, v11);
+                    (x1, y0 + t * dy)
+                };
 
                 // Draw line segments based on marching squares case
                 let draw_line = |p1: (f64, f64), p2: (f64, f64)| {
@@ -603,7 +687,15 @@ impl Graph2D {
         ctx.set_dash(&[], 0.0);
 
         // Coordinate display
-        set_color(ctx, Color { r: 30, g: 30, b: 46, a: 200 });
+        set_color(
+            ctx,
+            Color {
+                r: 30,
+                g: 30,
+                b: 46,
+                a: 200,
+            },
+        );
         let label = format!("({:.4}, {:.4})", mx, my);
         let label_w = label.len() as f64 * 7.0 + 8.0;
         let label_h = 18.0;
@@ -637,7 +729,7 @@ fn nice_step(rough: f64) -> f64 {
 
     let nice = if frac < 1.5 {
         1.0
-    } else if frac < 3.0 {
+    } else if frac <= 3.0 {
         2.0
     } else if frac < 7.0 {
         5.0

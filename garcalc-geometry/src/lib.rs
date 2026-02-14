@@ -21,11 +21,28 @@ pub type ShapeId = u64;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Shape {
     Point(Point2D),
-    Line { p1: Point2D, p2: Point2D },
-    Segment { p1: Point2D, p2: Point2D },
-    Ray { origin: Point2D, direction: Point2D },
-    Circle { center: Point2D, radius: f64 },
-    Arc { center: Point2D, radius: f64, start_angle: f64, end_angle: f64 },
+    Line {
+        p1: Point2D,
+        p2: Point2D,
+    },
+    Segment {
+        p1: Point2D,
+        p2: Point2D,
+    },
+    Ray {
+        origin: Point2D,
+        direction: Point2D,
+    },
+    Circle {
+        center: Point2D,
+        radius: f64,
+    },
+    Arc {
+        center: Point2D,
+        radius: f64,
+        start_angle: f64,
+        end_angle: f64,
+    },
     Polygon(Vec<Point2D>),
 }
 
