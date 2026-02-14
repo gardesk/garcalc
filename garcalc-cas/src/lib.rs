@@ -7,14 +7,14 @@
 //! - Equation solving
 //! - Limits and series expansions
 
+pub mod error;
+pub mod eval;
 pub mod expr;
 pub mod parser;
-pub mod eval;
-pub mod error;
 pub mod symbolic;
 
-pub use expr::{Expr, Symbol, Rational, LimitDirection, Sign};
-pub use parser::Parser;
-pub use eval::Evaluator;
 pub use error::{CasError, Result};
+pub use eval::Evaluator;
+pub use expr::{Expr, LimitDirection, Rational, Sign, Symbol};
+pub use parser::Parser;
 pub use symbolic::{Differentiator, Integrator, Limits, Simplifier, Solver};

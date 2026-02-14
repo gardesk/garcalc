@@ -287,10 +287,7 @@ impl<'a> Parser<'a> {
                     if let Some(last) = factors.last() {
                         if matches!(
                             last,
-                            Expr::Symbol(_)
-                                | Expr::Integer(_)
-                                | Expr::Float(_)
-                                | Expr::Func(_, _)
+                            Expr::Symbol(_) | Expr::Integer(_) | Expr::Float(_) | Expr::Func(_, _)
                         ) {
                             factors.push(self.parse_power()?);
                             continue;
@@ -472,7 +469,10 @@ impl<'a> Parser<'a> {
                         _ => Symbol::new("x"),
                     };
                     let (lower, upper) = if args.len() >= 2 {
-                        (Some(Box::new(args.remove(0))), Some(Box::new(args.remove(0))))
+                        (
+                            Some(Box::new(args.remove(0))),
+                            Some(Box::new(args.remove(0))),
+                        )
                     } else {
                         (None, None)
                     };

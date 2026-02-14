@@ -2,8 +2,8 @@
 //!
 //! Provides symbolic differentiation, integration, simplification, and solving.
 
-use crate::expr::{Expr, Symbol};
 use crate::error::{CasError, Result};
+use crate::expr::{Expr, Symbol};
 
 /// Symbolic differentiator
 pub struct Differentiator;
@@ -130,7 +130,11 @@ impl Differentiator {
             Expr::Func(name, args) => Self::diff_func(name, args, var),
 
             // Derivative of a derivative: just nest it
-            Expr::Derivative { expr, var: v, order } => {
+            Expr::Derivative {
+                expr,
+                var: v,
+                order,
+            } => {
                 if v == var {
                     Ok(Expr::Derivative {
                         expr: expr.clone(),
@@ -264,7 +268,10 @@ impl Differentiator {
                 // 1 / (2 * sqrt(x))
                 Expr::div(
                     Expr::Integer(1),
-                    Expr::mul(vec![Expr::Integer(2), Expr::func("sqrt", vec![arg.clone()])]),
+                    Expr::mul(vec![
+                        Expr::Integer(2),
+                        Expr::func("sqrt", vec![arg.clone()]),
+                    ]),
                 )
             }
             "cbrt" => {
@@ -332,10 +339,7 @@ impl Integrator {
     fn integrate_impl(expr: &Expr, var: &Symbol) -> Result<Expr> {
         // If expression doesn't contain variable, it's a constant
         if !expr.contains_var(var) {
-            return Ok(Expr::mul(vec![
-                expr.clone(),
-                Expr::Symbol(var.clone()),
-            ]));
+            return Ok(Expr::mul(vec![expr.clone(), Expr::Symbol(var.clone())]));
         }
 
         match expr {
@@ -393,10 +397,10 @@ impl Integrator {
                 if **base == Expr::Symbol(var.clone()) && !exp.contains_var(var) {
                     // Check for n = -1 case: ∫ x^(-1) dx = ln|x|
                     if exp.is_negative_one() {
-                        return Ok(Expr::func("ln", vec![Expr::func(
-                            "abs",
-                            vec![Expr::Symbol(var.clone())],
-                        )]));
+                        return Ok(Expr::func(
+                            "ln",
+                            vec![Expr::func("abs", vec![Expr::Symbol(var.clone())])],
+                        ));
                     }
 
                     let n_plus_1 = Expr::add(vec![(**exp).clone(), Expr::Integer(1)]);
@@ -484,28 +488,40 @@ impl Integrator {
             // Trigonometric
             "sin" => Expr::neg(Expr::func("cos", vec![arg.clone()])),
             "cos" => Expr::func("sin", vec![arg.clone()]),
-            "tan" => Expr::neg(Expr::func("ln", vec![Expr::func(
-                "abs",
-                vec![Expr::func("cos", vec![arg.clone()])],
-            )])),
-            "cot" => Expr::func("ln", vec![Expr::func(
-                "abs",
-                vec![Expr::func("sin", vec![arg.clone()])],
-            )]),
-            "sec" => Expr::func("ln", vec![Expr::func(
-                "abs",
-                vec![Expr::add(vec![
-                    Expr::func("sec", vec![arg.clone()]),
-                    Expr::func("tan", vec![arg.clone()]),
-                ])],
-            )]),
-            "csc" => Expr::neg(Expr::func("ln", vec![Expr::func(
-                "abs",
-                vec![Expr::add(vec![
-                    Expr::func("csc", vec![arg.clone()]),
-                    Expr::func("cot", vec![arg.clone()]),
-                ])],
-            )])),
+            "tan" => Expr::neg(Expr::func(
+                "ln",
+                vec![Expr::func(
+                    "abs",
+                    vec![Expr::func("cos", vec![arg.clone()])],
+                )],
+            )),
+            "cot" => Expr::func(
+                "ln",
+                vec![Expr::func(
+                    "abs",
+                    vec![Expr::func("sin", vec![arg.clone()])],
+                )],
+            ),
+            "sec" => Expr::func(
+                "ln",
+                vec![Expr::func(
+                    "abs",
+                    vec![Expr::add(vec![
+                        Expr::func("sec", vec![arg.clone()]),
+                        Expr::func("tan", vec![arg.clone()]),
+                    ])],
+                )],
+            ),
+            "csc" => Expr::neg(Expr::func(
+                "ln",
+                vec![Expr::func(
+                    "abs",
+                    vec![Expr::add(vec![
+                        Expr::func("csc", vec![arg.clone()]),
+                        Expr::func("cot", vec![arg.clone()]),
+                    ])],
+                )],
+            )),
 
             // Hyperbolic
             "sinh" => Expr::func("cosh", vec![arg.clone()]),
@@ -535,7 +551,12 @@ pub struct Limits;
 
 impl Limits {
     /// Compute the limit of an expression as var approaches point
-    pub fn limit(expr: &Expr, var: &Symbol, point: &Expr, direction: Option<crate::expr::LimitDirection>) -> Result<Expr> {
+    pub fn limit(
+        expr: &Expr,
+        var: &Symbol,
+        point: &Expr,
+        direction: Option<crate::expr::LimitDirection>,
+    ) -> Result<Expr> {
         Self::limit_impl(expr, var, point, direction, 0)
     }
 
@@ -601,7 +622,8 @@ impl Limits {
                             // Handle x^(-n) where n > 1
                             if let Expr::Integer(n) = inner.as_ref() {
                                 if *n > 0 {
-                                    denominator_parts.push(Expr::pow((**base).clone(), Expr::Integer(*n)));
+                                    denominator_parts
+                                        .push(Expr::pow((**base).clone(), Expr::Integer(*n)));
                                     continue;
                                 }
                             }
@@ -624,8 +646,10 @@ impl Limits {
                     };
 
                     // Check if it's an indeterminate form (0/0 or ∞/∞)
-                    let num_at_point = Simplifier::simplify(&Simplifier::substitute(&numerator, var, point));
-                    let denom_at_point = Simplifier::simplify(&Simplifier::substitute(&denominator, var, point));
+                    let num_at_point =
+                        Simplifier::simplify(&Simplifier::substitute(&numerator, var, point));
+                    let denom_at_point =
+                        Simplifier::simplify(&Simplifier::substitute(&denominator, var, point));
 
                     let num_zero = Self::is_zero(&num_at_point);
                     let denom_zero = Self::is_zero(&denom_at_point);
@@ -633,7 +657,14 @@ impl Limits {
                     let denom_inf = matches!(denom_at_point, Expr::Infinity(_));
 
                     if (num_zero && denom_zero) || (num_inf && denom_inf) {
-                        return Self::try_lhopital(&numerator, &denominator, var, point, direction, depth);
+                        return Self::try_lhopital(
+                            &numerator,
+                            &denominator,
+                            var,
+                            point,
+                            direction,
+                            depth,
+                        );
                     }
                 }
 
@@ -652,7 +683,10 @@ impl Limits {
                     // 1/0 -> infinity (sign depends on direction)
                     Ok(Expr::Infinity(crate::expr::Sign::Positive))
                 } else {
-                    Ok(Simplifier::simplify(&Expr::pow(base_limit, Expr::Integer(-1))))
+                    Ok(Simplifier::simplify(&Expr::pow(
+                        base_limit,
+                        Expr::Integer(-1),
+                    )))
                 }
             }
 
@@ -809,7 +843,9 @@ impl Limits {
             Expr::Func(name, args) if name == "exp" && args.len() == 1 => {
                 if args[0] == Expr::Symbol(var.clone()) {
                     match sign {
-                        crate::expr::Sign::Positive => Ok(Expr::Infinity(crate::expr::Sign::Positive)),
+                        crate::expr::Sign::Positive => {
+                            Ok(Expr::Infinity(crate::expr::Sign::Positive))
+                        }
                         crate::expr::Sign::Negative => Ok(Expr::Integer(0)),
                     }
                 } else {
@@ -870,10 +906,7 @@ impl Limits {
             let denom_deriv = Differentiator::diff(denom, var)?;
 
             // Recursive limit of f'/g'
-            let quotient = Expr::mul(vec![
-                num_deriv,
-                Expr::pow(denom_deriv, Expr::Integer(-1)),
-            ]);
+            let quotient = Expr::mul(vec![num_deriv, Expr::pow(denom_deriv, Expr::Integer(-1))]);
             Self::limit_impl(&quotient, var, point, direction, depth + 1)
         } else if denom_is_zero && !num_is_zero {
             // Limit is ±∞ or doesn't exist
@@ -901,8 +934,7 @@ impl Limits {
             // Check for 0 * ∞ or similar patterns in products
             Expr::Mul(factors) => {
                 let has_infinity = factors.iter().any(|f| {
-                    matches!(f, Expr::Infinity(_))
-                        || matches!(f, Expr::Rational(r) if r.den == 0)
+                    matches!(f, Expr::Infinity(_)) || matches!(f, Expr::Rational(r) if r.den == 0)
                 });
                 let has_zero = factors.iter().any(|f| Self::is_zero(f));
                 // 0 * ∞ is indeterminate
@@ -961,7 +993,11 @@ impl Limits {
                 }
             }
             Expr::Mul(factors) => factors.iter().map(|f| Self::degree_in(f, var)).sum(),
-            Expr::Add(terms) => terms.iter().map(|t| Self::degree_in(t, var)).max().unwrap_or(0),
+            Expr::Add(terms) => terms
+                .iter()
+                .map(|t| Self::degree_in(t, var))
+                .max()
+                .unwrap_or(0),
             Expr::Neg(e) => Self::degree_in(e, var),
             _ => 0,
         }
@@ -1193,6 +1229,16 @@ impl Simplifier {
             Expr::Func(name, args) => {
                 let sargs: Vec<_> = args.iter().map(Self::simplify_impl).collect();
 
+                if name == "factorial" && sargs.len() == 1 {
+                    if let Expr::Integer(n) = sargs[0] {
+                        if n >= 0 {
+                            if let Some(value) = Self::factorial_i64_checked(n) {
+                                return Expr::Integer(value);
+                            }
+                        }
+                    }
+                }
+
                 // Try to evaluate sqrt of perfect squares
                 if name == "sqrt" && sargs.len() == 1 {
                     if let Expr::Integer(n) = &sargs[0] {
@@ -1411,7 +1457,10 @@ impl Simplifier {
                     final_factors.insert(0, Expr::Integer(numerator));
                 }
             } else {
-                final_factors.insert(0, Expr::Rational(crate::expr::Rational::new(numerator, denominator)));
+                final_factors.insert(
+                    0,
+                    Expr::Rational(crate::expr::Rational::new(numerator, denominator)),
+                );
             }
         }
 
@@ -1422,6 +1471,16 @@ impl Simplifier {
         } else {
             Expr::Mul(final_factors)
         }
+    }
+
+    fn factorial_i64_checked(n: i64) -> Option<i64> {
+        let n = u64::try_from(n).ok()?;
+        let mut acc: i64 = 1;
+        for k in 2..=n {
+            let step = i64::try_from(k).ok()?;
+            acc = acc.checked_mul(step)?;
+        }
+        Some(acc)
     }
 }
 
@@ -1469,10 +1528,7 @@ impl Solver {
                         "Variable coefficient is zero".to_string(),
                     ));
                 }
-                return Ok(vec![Simplifier::simplify(&Expr::div(
-                    Expr::neg(c),
-                    b,
-                ))]);
+                return Ok(vec![Simplifier::simplify(&Expr::div(Expr::neg(c), b))]);
             }
             // Quadratic
             return Self::solve_quadratic_with_coeffs(&a, &b, &c);
@@ -1504,8 +1560,8 @@ impl Solver {
 
         // Try many starting points to find all roots
         let mut starting_points: Vec<f64> = vec![
-            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0,
-            0.25, -0.25, 0.75, -0.75, 1.5, -1.5, 2.5, -2.5, 10.0, -10.0, 100.0, -100.0,
+            0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0, 0.25, -0.25,
+            0.75, -0.75, 1.5, -1.5, 2.5, -2.5, 10.0, -10.0, 100.0, -100.0,
         ];
         // Add more points based on degree
         for i in 0..20 {
@@ -1540,21 +1596,29 @@ impl Solver {
         }
 
         // Convert to expressions, cleaning up near-integers
-        let result: Vec<Expr> = roots.into_iter().map(|r| {
-            if r.abs() < 1e-10 {
-                Expr::Integer(0)
-            } else if (r - r.round()).abs() < 1e-10 {
-                Expr::Integer(r.round() as i64)
-            } else {
-                Expr::Float(r)
-            }
-        }).collect();
+        let result: Vec<Expr> = roots
+            .into_iter()
+            .map(|r| {
+                if r.abs() < 1e-10 {
+                    Expr::Integer(0)
+                } else if (r - r.round()).abs() < 1e-10 {
+                    Expr::Integer(r.round() as i64)
+                } else {
+                    Expr::Float(r)
+                }
+            })
+            .collect();
 
         Some(result)
     }
 
     /// Newton-Raphson iteration to find a root
-    fn newton_raphson(expr: &Expr, var: &Symbol, start: f64, evaluator: &crate::eval::Evaluator) -> Option<f64> {
+    fn newton_raphson(
+        expr: &Expr,
+        var: &Symbol,
+        start: f64,
+        evaluator: &crate::eval::Evaluator,
+    ) -> Option<f64> {
         let deriv = Differentiator::diff(expr, var).ok()?;
         let deriv = Simplifier::simplify(&deriv);
 
@@ -1565,7 +1629,10 @@ impl Solver {
         for _ in 0..max_iter {
             let f_x = {
                 let subst = Simplifier::substitute(expr, var, &Expr::Float(x));
-                evaluator.eval(&subst).ok().and_then(|e| Self::expr_to_f64(&e))?
+                evaluator
+                    .eval(&subst)
+                    .ok()
+                    .and_then(|e| Self::expr_to_f64(&e))?
             };
 
             if f_x.abs() < tolerance {
@@ -1574,7 +1641,10 @@ impl Solver {
 
             let fp_x = {
                 let subst = Simplifier::substitute(&deriv, var, &Expr::Float(x));
-                evaluator.eval(&subst).ok().and_then(|e| Self::expr_to_f64(&e))?
+                evaluator
+                    .eval(&subst)
+                    .ok()
+                    .and_then(|e| Self::expr_to_f64(&e))?
             };
 
             if fp_x.abs() < 1e-15 {
@@ -1639,77 +1709,6 @@ impl Solver {
         }
     }
 
-    fn classify_polynomial(expr: &Expr, var: &Symbol) -> Option<(u32, Expr, Expr)> {
-        // Very simplified polynomial detection
-        // Returns (degree, leading coefficient, rest)
-        match expr {
-            // x alone: degree 1, coef 1
-            Expr::Symbol(s) if s == var => Some((1, Expr::Integer(1), Expr::Integer(0))),
-
-            // a*x: degree 1, coef a
-            Expr::Mul(factors) => {
-                let mut coef = Expr::Integer(1);
-                let mut has_var = false;
-                let mut var_power = 1u32;
-
-                for f in factors {
-                    match f {
-                        Expr::Symbol(s) if s == var => {
-                            has_var = true;
-                        }
-                        Expr::Pow(base, exp) => {
-                            if let Expr::Symbol(s) = &**base {
-                                if s == var {
-                                    if let Expr::Integer(n) = **exp {
-                                        has_var = true;
-                                        var_power = n as u32;
-                                    }
-                                }
-                            }
-                        }
-                        other if !other.contains_var(var) => {
-                            coef = Expr::mul(vec![coef, other.clone()]);
-                        }
-                        _ => return None,
-                    }
-                }
-
-                if has_var {
-                    Some((var_power, Simplifier::simplify(&coef), Expr::Integer(0)))
-                } else {
-                    None
-                }
-            }
-
-            // ax + b or ax^2 + bx + c
-            Expr::Add(terms) => {
-                let mut max_degree = 0u32;
-                let mut leading_coef = Expr::Integer(0);
-
-                for term in terms {
-                    if let Some((deg, coef, _)) = Self::classify_polynomial(term, var) {
-                        if deg > max_degree {
-                            max_degree = deg;
-                            leading_coef = coef;
-                        }
-                    } else if !term.contains_var(var) {
-                        // Constant term, ignore for degree calculation
-                    } else {
-                        return None;
-                    }
-                }
-
-                if max_degree > 0 {
-                    Some((max_degree, leading_coef, Expr::Integer(0)))
-                } else {
-                    None
-                }
-            }
-
-            _ => None,
-        }
-    }
-
     fn solve_quadratic_with_coeffs(a: &Expr, b: &Expr, c: &Expr) -> Result<Vec<Expr>> {
         // Discriminant: b^2 - 4ac
         let discriminant = Simplifier::simplify(&Expr::sub(
@@ -1726,10 +1725,7 @@ impl Solver {
             Expr::add(vec![neg_b.clone(), sqrt_d.clone()]),
             two_a.clone(),
         ));
-        let x2 = Simplifier::simplify(&Expr::div(
-            Expr::sub(neg_b, sqrt_d),
-            two_a,
-        ));
+        let x2 = Simplifier::simplify(&Expr::div(Expr::sub(neg_b, sqrt_d), two_a));
 
         Ok(vec![x1, x2])
     }
@@ -1741,10 +1737,7 @@ impl Solver {
         Self::solve_quadratic_with_coeffs(&a, &b, &c)
     }
 
-    fn extract_quadratic_coefficients(
-        expr: &Expr,
-        var: &Symbol,
-    ) -> Result<(Expr, Expr, Expr)> {
+    fn extract_quadratic_coefficients(expr: &Expr, var: &Symbol) -> Result<(Expr, Expr, Expr)> {
         // Initialize coefficients
         let mut a = Expr::Integer(0);
         let mut b = Expr::Integer(0);
@@ -1764,7 +1757,7 @@ impl Solver {
                 _ => {
                     return Err(CasError::EvaluationError(
                         "Not a quadratic equation".to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -1935,6 +1928,16 @@ mod tests {
     }
 
     #[test]
+    fn test_simplify_mul_rational_one_identity() {
+        let expr = Expr::mul(vec![
+            Expr::Rational(crate::expr::Rational::new(1, 1)),
+            Expr::symbol("n"),
+        ]);
+        let result = Simplifier::simplify(&expr);
+        assert_eq!(result, Expr::symbol("n"));
+    }
+
+    #[test]
     fn test_simplify_combine_like() {
         // 2x + 3x = 5x
         let expr = Expr::add(vec![
@@ -1967,5 +1970,33 @@ mod tests {
         ]);
         let solutions = Solver::solve(&expr, &Symbol::new("x")).unwrap();
         assert!(!solutions.is_empty());
+    }
+
+    #[test]
+    fn test_simplify_factorial_constant() {
+        let expr = Expr::func("factorial", vec![Expr::Integer(1)]);
+        let simplified = Simplifier::simplify(&expr);
+        assert_eq!(simplified, Expr::Integer(1));
+    }
+
+    #[test]
+    fn test_simplify_product_residual_factorial_inverse() {
+        let expr = Expr::mul(vec![
+            Expr::func("factorial", vec![Expr::symbol("n")]),
+            Expr::func(
+                "factorial",
+                vec![Expr::add(vec![Expr::Integer(1), Expr::symbol("n")])],
+            ),
+            Expr::pow(
+                Expr::func("factorial", vec![Expr::Integer(1)]),
+                Expr::Integer(-1),
+            ),
+        ]);
+
+        let simplified = Simplifier::simplify(&expr);
+        let rendered = simplified.to_string();
+        assert!(!rendered.contains("1!"));
+        assert!(!rendered.contains("factorial"));
+        assert!(rendered.contains("n!"));
     }
 }

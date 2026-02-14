@@ -263,6 +263,7 @@ impl Expr {
     pub fn is_zero(&self) -> bool {
         match self {
             Self::Integer(0) => true,
+            Self::Rational(r) if r.den != 0 && r.num == 0 => true,
             Self::Float(x) if *x == 0.0 => true,
             _ => false,
         }
@@ -271,6 +272,7 @@ impl Expr {
     pub fn is_one(&self) -> bool {
         match self {
             Self::Integer(1) => true,
+            Self::Rational(r) if r.den != 0 && r.num == r.den => true,
             Self::Float(x) if *x == 1.0 => true,
             _ => false,
         }
@@ -279,6 +281,7 @@ impl Expr {
     pub fn is_negative_one(&self) -> bool {
         match self {
             Self::Integer(-1) => true,
+            Self::Rational(r) if r.den != 0 && r.num == -r.den => true,
             Self::Float(x) if *x == -1.0 => true,
             _ => false,
         }
@@ -307,12 +310,17 @@ impl Expr {
             Self::Derivative { expr, .. } => expr.contains_var(var),
             Self::Integral { expr, .. } => expr.contains_var(var),
             Self::Limit { expr, point, .. } => expr.contains_var(var) || point.contains_var(var),
-            Self::Sum { expr, lower, upper, .. } | Self::Product { expr, lower, upper, .. } => {
-                expr.contains_var(var) || lower.contains_var(var) || upper.contains_var(var)
+            Self::Sum {
+                expr, lower, upper, ..
             }
+            | Self::Product {
+                expr, lower, upper, ..
+            } => expr.contains_var(var) || lower.contains_var(var) || upper.contains_var(var),
             Self::Equation(lhs, rhs) => lhs.contains_var(var) || rhs.contains_var(var),
             Self::Inequality { lhs, rhs, .. } => lhs.contains_var(var) || rhs.contains_var(var),
-            Self::Matrix(rows) => rows.iter().any(|row| row.iter().any(|e| e.contains_var(var))),
+            Self::Matrix(rows) => rows
+                .iter()
+                .any(|row| row.iter().any(|e| e.contains_var(var))),
             Self::Vector(elems) => elems.iter().any(|e| e.contains_var(var)),
             _ => false,
         }
@@ -378,6 +386,16 @@ impl fmt::Display for Expr {
             }
             Self::Pow(base, exp) => write!(f, "{base}^{exp}"),
             Self::Func(name, args) => {
+                if name == "factorial" && args.len() == 1 {
+                    let arg = &args[0];
+                    if factorial_arg_needs_parens(arg) {
+                        write!(f, "({arg})!")?;
+                    } else {
+                        write!(f, "{arg}!")?;
+                    }
+                    return Ok(());
+                }
+
                 write!(f, "{name}(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -474,6 +492,10 @@ impl fmt::Display for Expr {
     }
 }
 
+fn factorial_arg_needs_parens(arg: &Expr) -> bool {
+    matches!(arg, Expr::Neg(_) | Expr::Pow(_, _))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,9 +518,35 @@ mod tests {
     }
 
     #[test]
+    fn test_factorial_display() {
+        let simple = Expr::func("factorial", vec![Expr::symbol("n")]);
+        assert_eq!(simple.to_string(), "n!");
+
+        let grouped = Expr::func(
+            "factorial",
+            vec![Expr::add(vec![Expr::symbol("n"), Expr::integer(1)])],
+        );
+        assert_eq!(grouped.to_string(), "(n+1)!");
+
+        let negated = Expr::func("factorial", vec![Expr::neg(Expr::symbol("n"))]);
+        assert_eq!(negated.to_string(), "(-n)!");
+    }
+
+    #[test]
     fn test_contains_var() {
         let expr = Expr::add(vec![Expr::symbol("x"), Expr::integer(1)]);
         assert!(expr.contains_var(&Symbol::new("x")));
         assert!(!expr.contains_var(&Symbol::new("y")));
+    }
+
+    #[test]
+    fn test_numeric_identity_predicates_include_rationals() {
+        let zero = Expr::Rational(Rational::new(0, 5));
+        let one = Expr::Rational(Rational::new(2, 2));
+        let negative_one = Expr::Rational(Rational::new(-3, 3));
+
+        assert!(zero.is_zero());
+        assert!(one.is_one());
+        assert!(negative_one.is_negative_one());
     }
 }
