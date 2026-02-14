@@ -759,13 +759,30 @@ impl MathInput {
         }
 
         let current_path = self.cursor.path.clone();
-        let next_idx = if let Some(idx) = slots.iter().position(|p| p == &current_path) {
-            (idx + 1) % slots.len()
-        } else {
-            slots.iter().position(|p| p > &current_path).unwrap_or(0)
-        };
+        if let Some(idx) = slots.iter().position(|p| p == &current_path) {
+            self.cursor.path = slots[(idx + 1) % slots.len()].clone();
+            self.cursor.offset = 0;
+            return;
+        }
 
-        self.cursor.path = slots[next_idx].clone();
+        let ordered_paths = self.collect_node_paths();
+        let target =
+            if let Some(current_idx) = ordered_paths.iter().position(|p| p == &current_path) {
+                slots
+                    .iter()
+                    .find(|slot| {
+                        ordered_paths
+                            .iter()
+                            .position(|p| p == *slot)
+                            .is_some_and(|slot_idx| slot_idx > current_idx)
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| slots[0].clone())
+            } else {
+                slots[0].clone()
+            };
+
+        self.cursor.path = target;
         self.cursor.offset = 0;
     }
 
@@ -777,16 +794,35 @@ impl MathInput {
         }
 
         let current_path = self.cursor.path.clone();
-        let prev_idx = if let Some(idx) = slots.iter().position(|p| p == &current_path) {
-            if idx == 0 { slots.len() - 1 } else { idx - 1 }
-        } else {
-            match slots.iter().rposition(|p| p < &current_path) {
-                Some(idx) => idx,
-                None => slots.len() - 1,
-            }
-        };
+        if let Some(idx) = slots.iter().position(|p| p == &current_path) {
+            self.cursor.path = if idx == 0 {
+                slots[slots.len() - 1].clone()
+            } else {
+                slots[idx - 1].clone()
+            };
+            self.cursor.offset = 0;
+            return;
+        }
 
-        self.cursor.path = slots[prev_idx].clone();
+        let ordered_paths = self.collect_node_paths();
+        let target =
+            if let Some(current_idx) = ordered_paths.iter().position(|p| p == &current_path) {
+                slots
+                    .iter()
+                    .rev()
+                    .find(|slot| {
+                        ordered_paths
+                            .iter()
+                            .position(|p| p == *slot)
+                            .is_some_and(|slot_idx| slot_idx < current_idx)
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| slots[slots.len() - 1].clone())
+            } else {
+                slots[slots.len() - 1].clone()
+            };
+
+        self.cursor.path = target;
         self.cursor.offset = 0;
     }
 
@@ -864,6 +900,24 @@ impl MathInput {
                 out.push(path.clone());
                 return;
             }
+            for i in MathInput::ordered_child_indices(node) {
+                if let Some(child) = node.child(i) {
+                    path.push(i);
+                    walk(child, path, out);
+                    path.pop();
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut path = Vec::new();
+        walk(&self.root, &mut path, &mut out);
+        out
+    }
+
+    fn collect_node_paths(&self) -> Vec<Vec<usize>> {
+        fn walk(node: &MathBox, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            out.push(path.clone());
             for i in MathInput::ordered_child_indices(node) {
                 if let Some(child) = node.child(i) {
                     path.push(i);
@@ -1182,6 +1236,7 @@ pub enum SpecialKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convert::to_expr;
 
     fn run_command(input: &mut MathInput, cmd: &str) {
         input.handle_char('\\');
@@ -1580,6 +1635,33 @@ mod tests {
 
         input.handle_key(SpecialKey::Tab);
         assert_eq!(input.cursor_path(), &[0, 1]);
+    }
+
+    #[test]
+    fn test_dint_sequence_builds_expected_power_integrand() {
+        let mut input = MathInput::new();
+        run_command(&mut input, "dint");
+
+        // Upper bound slot first
+        input.handle_char('1');
+        input.handle_key(SpecialKey::Tab);
+        // Lower bound slot
+        input.handle_char('0');
+        input.handle_key(SpecialKey::Tab);
+        // Body slot: x^(2+x)
+        input.handle_char('x');
+        input.handle_char('^');
+        input.handle_char('(');
+        input.handle_char('2');
+        input.handle_char('+');
+        input.handle_char('x');
+        input.handle_char(')');
+
+        let expr = to_expr(input.mathbox()).expect("structured input should convert");
+        let rendered = expr.to_string();
+        assert!(rendered.contains("integrate("), "rendered: {rendered}");
+        assert!(rendered.contains("x^(2+x)"), "rendered: {rendered}");
+        assert!(rendered.contains(", x, 0, 1)"), "rendered: {rendered}");
     }
 
     #[test]
