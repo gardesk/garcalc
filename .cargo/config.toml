@@ -1,0 +1,4 @@
+[env]
+# NixOS: ensure linker can resolve system-shared X11 libs like libxcb.
+# This only applies when LIBRARY_PATH is not already set by the caller.
+LIBRARY_PATH = { value = "/run/current-system/sw/lib", force = false }
