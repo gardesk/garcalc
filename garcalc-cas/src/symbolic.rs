@@ -4,6 +4,7 @@
 
 use crate::error::{CasError, Result};
 use crate::expr::{Expr, Symbol};
+use std::f64::consts::E;
 
 /// Symbolic differentiator
 pub struct Differentiator;
@@ -328,6 +329,25 @@ impl Integrator {
     ) -> Result<Expr> {
         // Get antiderivative
         let antideriv = Self::integrate(expr, var)?;
+
+        // If we could not find an antiderivative, keep the definite integral
+        // unevaluated instead of substituting and incorrectly collapsing to zero.
+        if matches!(
+            &antideriv,
+            Expr::Integral {
+                expr: inner,
+                var: v,
+                lower: None,
+                upper: None
+            } if **inner == *expr && v == var
+        ) {
+            return Ok(Expr::Integral {
+                expr: Box::new(expr.clone()),
+                var: var.clone(),
+                lower: Some(Box::new(lower.clone())),
+                upper: Some(Box::new(upper.clone())),
+            });
+        }
 
         // F(upper) - F(lower)
         let f_upper = Simplifier::substitute(&antideriv, var, upper);
@@ -1229,6 +1249,19 @@ impl Simplifier {
             Expr::Func(name, args) => {
                 let sargs: Vec<_> = args.iter().map(Self::simplify_impl).collect();
 
+                if name == "ln" && sargs.len() == 1 {
+                    match &sargs[0] {
+                        Expr::Integer(1) => return Expr::Integer(0),
+                        Expr::Rational(r) if r.den != 0 && r.num == r.den => {
+                            return Expr::Integer(0);
+                        }
+                        Expr::Float(x) if (*x - 1.0).abs() < 1e-12 => return Expr::Integer(0),
+                        Expr::Symbol(sym) if sym.as_str() == "e" => return Expr::Integer(1),
+                        Expr::Float(x) if (*x - E).abs() < 1e-12 => return Expr::Integer(1),
+                        _ => {}
+                    }
+                }
+
                 if name == "factorial" && sargs.len() == 1 {
                     if let Expr::Integer(n) = sargs[0] {
                         if n >= 0 {
@@ -1977,6 +2010,21 @@ mod tests {
         let expr = Expr::func("factorial", vec![Expr::Integer(1)]);
         let simplified = Simplifier::simplify(&expr);
         assert_eq!(simplified, Expr::Integer(1));
+    }
+
+    #[test]
+    fn test_simplify_ln_of_e() {
+        let expr = Expr::func("ln", vec![Expr::symbol("e")]);
+        let simplified = Simplifier::simplify(&expr);
+        assert_eq!(simplified, Expr::Integer(1));
+    }
+
+    #[test]
+    fn test_diff_e_to_x_simplifies_to_e_to_x() {
+        let expr = Expr::pow(Expr::symbol("e"), Expr::symbol("x"));
+        let result = Differentiator::diff(&expr, &Symbol::new("x")).unwrap();
+        let simplified = Simplifier::simplify(&result);
+        assert_eq!(simplified, Expr::pow(Expr::symbol("e"), Expr::symbol("x")));
     }
 
     #[test]

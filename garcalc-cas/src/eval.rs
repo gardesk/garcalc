@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::f64::consts::{E, PI};
 
 use crate::error::{CasError, Result};
-use crate::expr::{Expr, Rational, Sign};
+use crate::expr::{Expr, Rational, Sign, Symbol};
 use crate::symbolic::{Differentiator, Integrator, Limits, Simplifier, Solver};
 
 /// Variable bindings for evaluation
@@ -185,10 +185,18 @@ impl Evaluator {
                 upper,
             } => {
                 if let (Some(l), Some(u)) = (lower, upper) {
-                    // Definite integral - evaluate to number
+                    // Definite integral - try symbolic antiderivative first.
                     let result = Integrator::integrate_definite(inner, var, l, u)?;
                     let simplified = Simplifier::simplify(&result);
-                    self.eval(&simplified)
+                    if Self::is_unevaluated_definite_integral(&simplified) {
+                        // If no closed form is available, fall back to numerical quadrature.
+                        match self.eval_definite_integral_numeric(inner, var, l, u) {
+                            Ok(value) => Ok(value),
+                            Err(_) => Ok(simplified),
+                        }
+                    } else {
+                        self.eval(&simplified)
+                    }
                 } else {
                     // Indefinite integral - return symbolic result
                     let result = Integrator::integrate(inner, var)?;
@@ -545,8 +553,16 @@ impl Evaluator {
                 // integrate(expr, var, lower, upper)
                 if let Expr::Symbol(var) = &args[1] {
                     let result = Integrator::integrate_definite(&args[0], var, &args[2], &args[3])?;
-                    // Try to evaluate the result numerically
-                    self.eval(&Simplifier::simplify(&result))
+                    let simplified = Simplifier::simplify(&result);
+                    if Self::is_unevaluated_definite_integral(&simplified) {
+                        match self.eval_definite_integral_numeric(&args[0], var, &args[2], &args[3])
+                        {
+                            Ok(value) => Ok(value),
+                            Err(_) => Ok(simplified),
+                        }
+                    } else {
+                        self.eval(&simplified)
+                    }
                 } else {
                     Err(CasError::Type(
                         "integrate requires variable as second argument".to_string(),
@@ -993,6 +1009,115 @@ impl Evaluator {
             _ => Err(CasError::Type(format!(
                 "bound must be an integer, got {value}"
             ))),
+        }
+    }
+
+    fn is_unevaluated_definite_integral(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Integral {
+                lower: Some(_),
+                upper: Some(_),
+                ..
+            }
+        )
+    }
+
+    fn eval_definite_integral_numeric(
+        &self,
+        body: &Expr,
+        var: &Symbol,
+        lower: &Expr,
+        upper: &Expr,
+    ) -> Result<Expr> {
+        let lower_eval = self.eval(lower)?;
+        let upper_eval = self.eval(upper)?;
+        let mut a = self.to_f64(&lower_eval)?;
+        let mut b = self.to_f64(&upper_eval)?;
+
+        if !a.is_finite() || !b.is_finite() {
+            return Err(CasError::Type(
+                "integral bounds must be finite numbers".to_string(),
+            ));
+        }
+
+        if (a - b).abs() < 1e-14 {
+            return Ok(Expr::Integer(0));
+        }
+
+        let mut sign = 1.0;
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+            sign = -1.0;
+        }
+
+        let mut slices = 64usize;
+        let mut estimate = self.simpson_integral(body, var, a, b, slices)?;
+        for _ in 0..8 {
+            slices *= 2;
+            let refined = self.simpson_integral(body, var, a, b, slices)?;
+            if (refined - estimate).abs() <= 1e-10 * (1.0 + refined.abs()) {
+                return Ok(Self::float_to_expr(sign * refined));
+            }
+            estimate = refined;
+        }
+
+        Ok(Self::float_to_expr(sign * estimate))
+    }
+
+    fn simpson_integral(
+        &self,
+        body: &Expr,
+        var: &Symbol,
+        a: f64,
+        b: f64,
+        slices: usize,
+    ) -> Result<f64> {
+        if slices == 0 || slices % 2 != 0 {
+            return Err(CasError::EvaluationError(
+                "simpson integration requires a positive even number of slices".to_string(),
+            ));
+        }
+
+        let h = (b - a) / slices as f64;
+        let mut acc =
+            self.eval_integrand_point(body, var, a)? + self.eval_integrand_point(body, var, b)?;
+
+        for i in 1..slices {
+            let x = a + i as f64 * h;
+            let fx = self.eval_integrand_point(body, var, x)?;
+            if i % 2 == 0 {
+                acc += 2.0 * fx;
+            } else {
+                acc += 4.0 * fx;
+            }
+        }
+
+        Ok(acc * h / 3.0)
+    }
+
+    fn eval_integrand_point(&self, body: &Expr, var: &Symbol, x: f64) -> Result<f64> {
+        let substituted = Simplifier::substitute(body, var, &Expr::Float(x));
+        let evaluated = self.eval(&substituted)?;
+        let value = self.to_f64(&evaluated)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(CasError::EvaluationError(format!(
+                "integrand is not finite at {x}"
+            )))
+        }
+    }
+
+    fn float_to_expr(x: f64) -> Expr {
+        if !x.is_finite() {
+            return Expr::Float(x);
+        }
+        let rounded = x.round();
+        if (x - rounded).abs() < 1e-10 && rounded >= i64::MIN as f64 && rounded <= i64::MAX as f64 {
+            Expr::Integer(rounded as i64)
+        } else {
+            Expr::Float(x)
         }
     }
 
@@ -1645,6 +1770,25 @@ mod tests {
     #[test]
     fn test_product_evaluation() {
         assert_eq!(eval("product(n, n, 1, 4)").unwrap(), Expr::Integer(24));
+    }
+
+    #[test]
+    fn test_definite_integral_numeric_fallback_for_non_elementary_antiderivative() {
+        let result = eval_to_f64("integrate(x^(x+2), x, 0, 1)");
+        assert!((result - 0.2781176122).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_definite_integral_with_symbolic_bounds_stays_symbolic() {
+        let symbolic = eval("integrate(x^(x+2), x, 0, n)").unwrap();
+        assert!(matches!(
+            symbolic,
+            Expr::Integral {
+                lower: Some(_),
+                upper: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
