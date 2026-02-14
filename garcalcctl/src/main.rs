@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use garcalc_ipc::{socket_path, Command, Mode, Response};
+use garcalc_ipc::{Command, Mode, Response, socket_path};
 
 #[derive(Parser)]
 #[command(name = "garcalcctl")]
@@ -98,8 +98,8 @@ fn send_command(command: &Command) -> Result<Response> {
     let mut response_line = String::new();
     reader.read_line(&mut response_line)?;
 
-    let response: Response = serde_json::from_str(&response_line)
-        .context("Failed to parse response from garcalc")?;
+    let response: Response =
+        serde_json::from_str(&response_line).context("Failed to parse response from garcalc")?;
 
     Ok(response)
 }

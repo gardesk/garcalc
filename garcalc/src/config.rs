@@ -153,9 +153,12 @@ impl Config {
                 let config = Self::from_lua_table(&calc)?;
                 Ok(config)
             } else {
-                Err(mlua::Error::RuntimeError("gar.calculator not found".to_string()))
+                Err(mlua::Error::RuntimeError(
+                    "gar.calculator not found".to_string(),
+                ))
             }
-        }).map_err(|e| anyhow::anyhow!("Lua error: {}", e))
+        })
+        .map_err(|e| anyhow::anyhow!("Lua error: {}", e))
     }
 
     /// Parse Config from Lua table

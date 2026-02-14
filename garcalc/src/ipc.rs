@@ -1,11 +1,11 @@
 //! IPC server for garcalc daemon
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use garcalc_cas::Evaluator;
-use garcalc_ipc::{socket_path, Command, Mode, Response, ResponseData};
+use garcalc_ipc::{Command, Mode, Response, ResponseData, socket_path};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal;
@@ -142,9 +142,7 @@ impl IpcServer {
                 }
                 Err(e) => Response::err(e.to_string()),
             },
-            Command::GetMode => {
-                Response::ok_with_data(ResponseData::Mode { mode: self.mode })
-            }
+            Command::GetMode => Response::ok_with_data(ResponseData::Mode { mode: self.mode }),
             Command::SetMode { mode } => {
                 self.mode = mode;
                 Response::ok()

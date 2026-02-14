@@ -11,7 +11,7 @@ use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use garcalc_cas::{eval::AngleMode, Evaluator};
+use garcalc_cas::{Evaluator, eval::AngleMode};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -38,7 +38,9 @@ struct Args {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .init();
 
     let args = Args::parse();
