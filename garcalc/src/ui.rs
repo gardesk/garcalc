@@ -21,6 +21,53 @@ pub struct CalculatorUI {
     gc: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalcButtonAction {
+    InsertText(&'static str),
+    Command(&'static str),
+    Backspace,
+    Delete,
+    MoveLeft,
+    MoveRight,
+    Tab,
+    Clear,
+    Evaluate,
+    ToggleExtended,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CalcButtonRole {
+    Numeric,
+    Operator,
+    Function,
+    Command,
+    Control,
+    Evaluate,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CalcButtonSpec {
+    label: &'static str,
+    action: CalcButtonAction,
+    role: CalcButtonRole,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CalcButtonRender {
+    rect: Rect,
+    label: &'static str,
+    action: CalcButtonAction,
+    role: CalcButtonRole,
+}
+
+#[derive(Debug, Clone)]
+struct CalcButtonLayout {
+    panel_rect: Rect,
+    toggle_rect: Option<Rect>,
+    buttons: Vec<CalcButtonRender>,
+    hidden_optional_rows: usize,
+}
+
 impl CalculatorUI {
     const HELP_BUTTON_SIZE: u32 = 28;
 
@@ -71,6 +118,7 @@ impl CalculatorUI {
         graph: &Graph2D,
         graph3d: &Graph3D,
         show_help_modal: bool,
+        calc_buttons_extended: bool,
     ) -> Result<()> {
         let size = self.renderer.size();
 
@@ -89,14 +137,27 @@ impl CalculatorUI {
             // Mode indicator
             self.draw_mode_indicator(mode)?;
 
+            let input_height: i32 = if math_input.is_some() { 88 } else { 50 };
+            let input_y = size.height as i32 - input_height - 10;
+            let button_layout = if math_input.is_some() {
+                self.calculator_button_layout(input_y, calc_buttons_extended)
+            } else {
+                None
+            };
+
             // History area
             let history_start_y = 40;
-            let input_height: i32 = if math_input.is_some() { 88 } else { 50 };
-            let history_end_y = size.height as i32 - input_height - 20;
+            let history_end_y = button_layout
+                .as_ref()
+                .map(|layout| layout.panel_rect.y - 10)
+                .unwrap_or(size.height as i32 - input_height - 20);
             self.draw_history(history, history_start_y, history_end_y)?;
 
+            if let Some(layout) = button_layout.as_ref() {
+                self.draw_calculator_buttons(layout, calc_buttons_extended)?;
+            }
+
             // Input area
-            let input_y = size.height as i32 - input_height - 10;
             if let Some(math_input) = math_input {
                 self.draw_math_input(math_input, cursor_visible, input_y, input_height as u32)?;
             } else {
@@ -128,6 +189,30 @@ impl CalculatorUI {
     pub fn is_help_close_hit(&self, x: f64, y: f64) -> bool {
         self.help_close_rect()
             .contains_point(Point::new(x as i32, y as i32))
+    }
+
+    pub fn calculator_button_action_at(
+        &self,
+        x: f64,
+        y: f64,
+        calc_buttons_extended: bool,
+    ) -> Option<CalcButtonAction> {
+        let size = self.renderer.size();
+        let input_y = size.height as i32 - 88 - 10;
+        let layout = self.calculator_button_layout(input_y, calc_buttons_extended)?;
+        let point = Point::new(x as i32, y as i32);
+
+        if let Some(toggle) = layout.toggle_rect {
+            if toggle.contains_point(point) {
+                return Some(CalcButtonAction::ToggleExtended);
+            }
+        }
+
+        layout
+            .buttons
+            .iter()
+            .find(|button| button.rect.contains_point(point))
+            .map(|button| button.action)
     }
 
     fn render_graph_mode(
@@ -331,6 +416,517 @@ impl CalculatorUI {
             .font_size(12.0)
             .color(self.theme.foreground);
         self.renderer.text(mode_text, 20.0, 8.0, &style)?;
+
+        Ok(())
+    }
+
+    fn calc_core_rows() -> Vec<Vec<CalcButtonSpec>> {
+        vec![
+            vec![
+                CalcButtonSpec {
+                    label: "7",
+                    action: CalcButtonAction::InsertText("7"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "8",
+                    action: CalcButtonAction::InsertText("8"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "9",
+                    action: CalcButtonAction::InsertText("9"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "/",
+                    action: CalcButtonAction::InsertText("/"),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "(",
+                    action: CalcButtonAction::InsertText("("),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: ")",
+                    action: CalcButtonAction::InsertText(")"),
+                    role: CalcButtonRole::Operator,
+                },
+            ],
+            vec![
+                CalcButtonSpec {
+                    label: "4",
+                    action: CalcButtonAction::InsertText("4"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "5",
+                    action: CalcButtonAction::InsertText("5"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "6",
+                    action: CalcButtonAction::InsertText("6"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "*",
+                    action: CalcButtonAction::InsertText("*"),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "x",
+                    action: CalcButtonAction::InsertText("x"),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "y",
+                    action: CalcButtonAction::InsertText("y"),
+                    role: CalcButtonRole::Function,
+                },
+            ],
+            vec![
+                CalcButtonSpec {
+                    label: "1",
+                    action: CalcButtonAction::InsertText("1"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "2",
+                    action: CalcButtonAction::InsertText("2"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "3",
+                    action: CalcButtonAction::InsertText("3"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: "-",
+                    action: CalcButtonAction::InsertText("-"),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "^",
+                    action: CalcButtonAction::InsertText("^"),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "!",
+                    action: CalcButtonAction::InsertText("!"),
+                    role: CalcButtonRole::Operator,
+                },
+            ],
+            vec![
+                CalcButtonSpec {
+                    label: "0",
+                    action: CalcButtonAction::InsertText("0"),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: ".",
+                    action: CalcButtonAction::InsertText("."),
+                    role: CalcButtonRole::Numeric,
+                },
+                CalcButtonSpec {
+                    label: ",",
+                    action: CalcButtonAction::InsertText(","),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "+",
+                    action: CalcButtonAction::InsertText("+"),
+                    role: CalcButtonRole::Operator,
+                },
+                CalcButtonSpec {
+                    label: "π",
+                    action: CalcButtonAction::InsertText("pi"),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "=",
+                    action: CalcButtonAction::Evaluate,
+                    role: CalcButtonRole::Evaluate,
+                },
+            ],
+        ]
+    }
+
+    fn calc_scientific_rows() -> Vec<Vec<CalcButtonSpec>> {
+        vec![
+            vec![
+                CalcButtonSpec {
+                    label: "sin(",
+                    action: CalcButtonAction::InsertText("sin("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "cos(",
+                    action: CalcButtonAction::InsertText("cos("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "tan(",
+                    action: CalcButtonAction::InsertText("tan("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "ln(",
+                    action: CalcButtonAction::InsertText("ln("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "log(",
+                    action: CalcButtonAction::InsertText("log("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "√",
+                    action: CalcButtonAction::InsertText("sqrt("),
+                    role: CalcButtonRole::Function,
+                },
+            ],
+            vec![
+                CalcButtonSpec {
+                    label: "sin⁻¹",
+                    action: CalcButtonAction::InsertText("asin("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "cos⁻¹",
+                    action: CalcButtonAction::InsertText("acos("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "tan⁻¹",
+                    action: CalcButtonAction::InsertText("atan("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "eˣ",
+                    action: CalcButtonAction::InsertText("exp("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "abs(",
+                    action: CalcButtonAction::InsertText("abs("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "gamma(",
+                    action: CalcButtonAction::InsertText("gamma("),
+                    role: CalcButtonRole::Function,
+                },
+            ],
+        ]
+    }
+
+    fn calc_extended_rows() -> Vec<Vec<CalcButtonSpec>> {
+        vec![
+            vec![
+                CalcButtonSpec {
+                    label: "a⁄b",
+                    action: CalcButtonAction::Command("frac"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "∑",
+                    action: CalcButtonAction::Command("sum"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "∏",
+                    action: CalcButtonAction::Command("prod"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "∫",
+                    action: CalcButtonAction::Command("int"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "∫ᵇₐ",
+                    action: CalcButtonAction::Command("dint"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "d/dx",
+                    action: CalcButtonAction::Command("diff"),
+                    role: CalcButtonRole::Command,
+                },
+            ],
+            vec![
+                CalcButtonSpec {
+                    label: "limₓ→a",
+                    action: CalcButtonAction::Command("lim"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "x=?",
+                    action: CalcButtonAction::Command("solve"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "ⁿ√",
+                    action: CalcButtonAction::Command("nthroot"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "▦",
+                    action: CalcButtonAction::Command("matrix"),
+                    role: CalcButtonRole::Command,
+                },
+                CalcButtonSpec {
+                    label: "↓min",
+                    action: CalcButtonAction::InsertText("min("),
+                    role: CalcButtonRole::Function,
+                },
+                CalcButtonSpec {
+                    label: "↑max",
+                    action: CalcButtonAction::InsertText("max("),
+                    role: CalcButtonRole::Function,
+                },
+            ],
+        ]
+    }
+
+    fn calc_control_row() -> Vec<CalcButtonSpec> {
+        vec![
+            CalcButtonSpec {
+                label: "Bksp",
+                action: CalcButtonAction::Backspace,
+                role: CalcButtonRole::Control,
+            },
+            CalcButtonSpec {
+                label: "Del",
+                action: CalcButtonAction::Delete,
+                role: CalcButtonRole::Control,
+            },
+            CalcButtonSpec {
+                label: "Clr",
+                action: CalcButtonAction::Clear,
+                role: CalcButtonRole::Control,
+            },
+            CalcButtonSpec {
+                label: "<",
+                action: CalcButtonAction::MoveLeft,
+                role: CalcButtonRole::Control,
+            },
+            CalcButtonSpec {
+                label: ">",
+                action: CalcButtonAction::MoveRight,
+                role: CalcButtonRole::Control,
+            },
+            CalcButtonSpec {
+                label: "Tab",
+                action: CalcButtonAction::Tab,
+                role: CalcButtonRole::Control,
+            },
+        ]
+    }
+
+    fn calculator_button_layout(&self, input_y: i32, extended: bool) -> Option<CalcButtonLayout> {
+        let size = self.renderer.size();
+        let min_history_height = 90i32;
+        let top_reserved = 46i32;
+        let max_panel_height = input_y - top_reserved - min_history_height - 8;
+        if max_panel_height < 132 {
+            return None;
+        }
+
+        let cols = 6i32;
+        let gap = 8i32;
+        let panel_side_padding = 12i32;
+        let panel_margin = 12i32;
+        let panel_max_width = size.width as i32 - panel_margin * 2;
+        if panel_max_width < 320 {
+            return None;
+        }
+
+        let mut button_w = (panel_max_width - panel_side_padding * 2 - (cols - 1) * gap) / cols;
+        button_w = button_w.clamp(44, 92);
+        let button_h = ((button_w as f64) * 0.58).round() as i32;
+        let button_h = button_h.clamp(30, 42);
+        let inner_width = cols * button_w + (cols - 1) * gap;
+        let panel_width = inner_width + panel_side_padding * 2;
+        let panel_x = (size.width as i32 - panel_width) / 2;
+
+        let mut rows = Vec::new();
+        rows.push(Self::calc_control_row());
+        rows.extend(Self::calc_core_rows());
+
+        let mut optional_rows = Self::calc_scientific_rows();
+        if extended {
+            optional_rows.extend(Self::calc_extended_rows());
+        }
+
+        let toolbar_h = 34i32;
+        let row_gap = gap;
+        let panel_vertical_padding = 12i32;
+        let max_rows_fit = ((max_panel_height - toolbar_h - panel_vertical_padding * 2 + row_gap)
+            / (button_h + row_gap))
+            .max(0) as usize;
+        let required_rows = rows.len();
+        if max_rows_fit < required_rows {
+            return None;
+        }
+
+        let extra_fit = max_rows_fit - required_rows;
+        let optional_visible = optional_rows.len().min(extra_fit);
+        let hidden_optional_rows = optional_rows.len().saturating_sub(optional_visible);
+        rows.extend(optional_rows.into_iter().take(optional_visible));
+
+        let row_count = rows.len() as i32;
+        let panel_height = panel_vertical_padding * 2
+            + toolbar_h
+            + row_count * button_h
+            + (row_count - 1).max(0) * row_gap;
+        let panel_bottom = input_y - 10;
+        let panel_y = panel_bottom - panel_height;
+
+        if panel_y < top_reserved + min_history_height {
+            return None;
+        }
+
+        let panel_rect = Rect::new(panel_x, panel_y, panel_width as u32, panel_height as u32);
+        let toggle_rect = if panel_width >= 340 {
+            Some(Rect::new(
+                panel_x + (panel_width - 190) / 2,
+                panel_y + 7,
+                190,
+                22,
+            ))
+        } else {
+            None
+        };
+
+        let mut buttons = Vec::new();
+        let grid_top = panel_y + panel_vertical_padding + toolbar_h;
+        for (row_idx, row) in rows.iter().enumerate() {
+            let cols_this_row = row.len() as i32;
+            if cols_this_row == 0 {
+                continue;
+            }
+            let row_width = cols_this_row * button_w + (cols_this_row - 1) * gap;
+            let row_x = panel_x + (panel_width - row_width) / 2;
+            let y = grid_top + row_idx as i32 * (button_h + row_gap);
+
+            for (col_idx, spec) in row.iter().enumerate() {
+                let x = row_x + col_idx as i32 * (button_w + gap);
+                buttons.push(CalcButtonRender {
+                    rect: Rect::new(x, y, button_w as u32, button_h as u32),
+                    label: spec.label,
+                    action: spec.action,
+                    role: spec.role,
+                });
+            }
+        }
+
+        Some(CalcButtonLayout {
+            panel_rect,
+            toggle_rect,
+            buttons,
+            hidden_optional_rows,
+        })
+    }
+
+    fn draw_calculator_buttons(
+        &mut self,
+        layout: &CalcButtonLayout,
+        calc_buttons_extended: bool,
+    ) -> Result<()> {
+        self.renderer.fill_rounded_rect(
+            layout.panel_rect,
+            10.0,
+            self.theme.background.lighten(0.03).with_alpha(0.96),
+        )?;
+        self.renderer.stroke_rounded_rect(
+            layout.panel_rect,
+            10.0,
+            self.theme.border.with_alpha(0.75),
+            1.0,
+        )?;
+
+        if let Some(toggle_rect) = layout.toggle_rect {
+            let toggle_bg = if calc_buttons_extended {
+                self.theme.selection_background.with_alpha(0.95)
+            } else {
+                self.theme.item_hover_background.with_alpha(0.95)
+            };
+            self.renderer
+                .fill_rounded_rect(toggle_rect, 7.0, toggle_bg)?;
+            self.renderer.stroke_rounded_rect(
+                toggle_rect,
+                7.0,
+                self.theme.border.with_alpha(0.85),
+                1.0,
+            )?;
+
+            let toggle_label = if calc_buttons_extended {
+                "Mode: Extended"
+            } else {
+                "Mode: Scientific"
+            };
+            let toggle_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(11.0)
+                .color(self.theme.selection_foreground);
+            let text_size = self.renderer.measure_text(toggle_label, &toggle_style)?;
+            self.renderer.text(
+                toggle_label,
+                toggle_rect.x as f64 + (toggle_rect.width as f64 - text_size.width as f64) * 0.5,
+                toggle_rect.y as f64 + (toggle_rect.height as f64 - text_size.height as f64) * 0.5,
+                &toggle_style,
+            )?;
+        }
+
+        if layout.hidden_optional_rows > 0 {
+            let hint = format!(
+                "{} function row(s) hidden by size",
+                layout.hidden_optional_rows
+            );
+            let hint_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(9.5)
+                .color(self.theme.foreground.with_alpha(0.62));
+            self.renderer.text(
+                &hint,
+                (layout.panel_rect.x + 10) as f64,
+                (layout.panel_rect.y + 10) as f64,
+                &hint_style,
+            )?;
+        }
+
+        for button in &layout.buttons {
+            let bg = match button.role {
+                CalcButtonRole::Numeric => self.theme.input_background.lighten(0.08),
+                CalcButtonRole::Operator => self.theme.selection_background.with_alpha(0.45),
+                CalcButtonRole::Function => self.theme.item_hover_background.with_alpha(0.88),
+                CalcButtonRole::Command => Color::rgb(0.22, 0.34, 0.52).with_alpha(0.92),
+                CalcButtonRole::Control => self.theme.background.lighten(0.09),
+                CalcButtonRole::Evaluate => self.theme.selection_background.with_alpha(0.92),
+            };
+            self.renderer.fill_rounded_rect(button.rect, 7.0, bg)?;
+            self.renderer.stroke_rounded_rect(
+                button.rect,
+                7.0,
+                self.theme.border.with_alpha(0.7),
+                1.0,
+            )?;
+
+            let label_style = TextStyle::new()
+                .font_family(&self.theme.font_family)
+                .font_size(11.0)
+                .color(self.theme.foreground.with_alpha(0.96));
+            let text_size = self.renderer.measure_text(button.label, &label_style)?;
+            self.renderer.text(
+                button.label,
+                button.rect.x as f64 + (button.rect.width as f64 - text_size.width as f64) * 0.5,
+                button.rect.y as f64 + (button.rect.height as f64 - text_size.height as f64) * 0.5,
+                &label_style,
+            )?;
+        }
 
         Ok(())
     }
@@ -670,6 +1266,7 @@ impl CalculatorUI {
                     math_renderer.fg_color = self.theme.foreground.with_alpha(0.85);
                     math_renderer.slot_bg_color = self.theme.input_background.lighten(0.15);
                     math_renderer.slot_focus_color = self.theme.selection_background;
+                    math_renderer.cursor_color = self.theme.input_cursor;
                     math_renderer.render(&prompt, padding as f64, baseline);
                     math_renderer.render(
                         mathbox,
@@ -714,6 +1311,7 @@ impl CalculatorUI {
                     math_renderer.fg_color = self.theme.selection_foreground;
                     math_renderer.slot_bg_color = self.theme.input_background.lighten(0.15);
                     math_renderer.slot_focus_color = self.theme.selection_background;
+                    math_renderer.cursor_color = self.theme.input_cursor;
                     math_renderer.render(&equals, equals_x, baseline);
                     math_renderer.render(
                         mathbox,
@@ -865,6 +1463,7 @@ impl CalculatorUI {
             math_renderer.fg_color = self.theme.foreground;
             math_renderer.slot_bg_color = self.theme.input_background.lighten(0.15);
             math_renderer.slot_focus_color = self.theme.selection_background;
+            math_renderer.cursor_color = self.theme.input_cursor;
             math_renderer.render_with_cursor(
                 math_input.mathbox(),
                 (padding + 10) as f64,

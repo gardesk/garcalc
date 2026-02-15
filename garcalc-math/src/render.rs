@@ -19,6 +19,8 @@ pub struct MathRenderer<'a> {
     pub slot_bg_color: Color,
     /// Slot border color when focused
     pub slot_focus_color: Color,
+    /// Insertion cursor color
+    pub cursor_color: Color,
     /// Whether the insertion cursor should be drawn
     cursor_visible: Cell<bool>,
 }
@@ -32,6 +34,7 @@ impl<'a> MathRenderer<'a> {
             fg_color: Color::new(0.0, 0.0, 0.0, 1.0),
             slot_bg_color: Color::new(0.9, 0.9, 0.95, 1.0),
             slot_focus_color: Color::new(0.3, 0.5, 0.9, 1.0),
+            cursor_color: Color::new(0.12, 0.42, 1.0, 1.0),
             cursor_visible: Cell::new(true),
         }
     }
@@ -105,6 +108,11 @@ impl<'a> MathRenderer<'a> {
             }
             MathBox::Slot => {
                 self.draw_slot(x, y, font_size, is_cursor_here);
+                if is_cursor_here && self.cursor_visible.get() {
+                    let (slot_width, _, _) = Self::slot_geometry(font_size);
+                    let cursor_x = x + slot_width * 0.15;
+                    self.draw_cursor(cursor_x, y, font_size);
+                }
             }
             MathBox::Fraction { num, den } => {
                 self.render_fraction(num, den, x, y, depth, cursor_path, cursor_offset);
@@ -322,8 +330,8 @@ impl<'a> MathRenderer<'a> {
     /// Draw cursor
     fn draw_cursor(&self, x: f64, y: f64, font_size: f64) {
         self.ctx.save().unwrap();
-        self.set_color(&self.slot_focus_color);
-        self.ctx.set_line_width(2.0);
+        self.set_color(&self.cursor_color);
+        self.ctx.set_line_width(1.0);
 
         let (_, height, _) = Self::slot_geometry(font_size);
         self.ctx.move_to(x, y - height * 0.6);
@@ -1386,8 +1394,17 @@ impl<'a> MathRenderer<'a> {
         cursor_offset: usize,
     ) {
         let mut current_x = x;
+        let row_cursor_here = cursor_path.map(|p| p.is_empty()).unwrap_or(false);
+        let row_cursor_idx = cursor_offset.min(items.len());
+        let scale = self.scale_for_depth(depth);
+        let font_size = self.layout_engine.base_font_size * scale;
+        let mut pending_cursor_x = None;
 
         for (i, item) in items.iter().enumerate() {
+            if row_cursor_here && i == row_cursor_idx {
+                pending_cursor_x = Some(current_x);
+            }
+
             let item_cursor = cursor_path.and_then(|p| {
                 if !p.is_empty() && p[0] == i {
                     Some(&p[1..])
@@ -1397,8 +1414,17 @@ impl<'a> MathRenderer<'a> {
             });
             self.render_at_depth(item, current_x, y, depth, item_cursor, cursor_offset);
 
-            let layout = self.layout_engine.layout(item, self.ctx);
+            let layout = self.layout_engine.layout_with_depth(item, self.ctx, depth);
             current_x += layout.width;
+        }
+
+        if row_cursor_here && self.cursor_visible.get() {
+            let cursor_x = if row_cursor_idx == items.len() {
+                current_x
+            } else {
+                pending_cursor_x.unwrap_or(current_x)
+            };
+            self.draw_cursor(cursor_x, y, font_size);
         }
     }
 

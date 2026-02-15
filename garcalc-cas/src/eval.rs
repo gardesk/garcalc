@@ -1495,11 +1495,7 @@ impl Evaluator {
                         _ => return None,
                     }
                 }
-                if saw_var {
-                    Some(shift)
-                } else {
-                    None
-                }
+                if saw_var { Some(shift) } else { None }
             }
             _ => None,
         }
@@ -1638,11 +1634,7 @@ fn factorial(n: u64) -> u64 {
 
 fn gcd(a: i64, b: i64) -> i64 {
     let (a, b) = (a.abs(), b.abs());
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn lcm(a: i64, b: i64) -> i64 {

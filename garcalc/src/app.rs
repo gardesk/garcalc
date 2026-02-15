@@ -1,19 +1,19 @@
 //! Application state and event loop
 
 use anyhow::Result;
-use garcalc_cas::{parser, Evaluator};
+use garcalc_cas::{Evaluator, parser};
 use garcalc_graph::{Graph2D, Graph3D};
 use garcalc_ipc::Mode;
 use garcalc_math::input::SpecialKey;
 use garcalc_math::{
-    from_expr, to_expr, ConvertError, InputResult as MathInputResult, MathBox, MathInput,
+    ConvertError, InputResult as MathInputResult, MathBox, MathInput, from_expr, to_expr,
 };
 use gartk_core::{InputEvent, Key, Modifiers, MouseButton};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::ui::CalculatorUI;
+use crate::ui::{CalcButtonAction, CalculatorUI};
 
 /// Calculator entry (input + result)
 #[derive(Debug, Clone)]
@@ -55,6 +55,8 @@ pub struct App {
     should_quit: bool,
     /// Whether the help modal overlay is open
     help_modal_open: bool,
+    /// Whether calculator buttons are in extended mode
+    calc_buttons_extended: bool,
     /// Whether the cursor is currently visible (blink state)
     cursor_visible: bool,
     /// Last time the cursor blink state toggled
@@ -129,6 +131,7 @@ impl App {
             popup_mode: popup,
             should_quit: false,
             help_modal_open: false,
+            calc_buttons_extended: false,
             cursor_visible: true,
             last_cursor_blink: Instant::now(),
             has_focus: false,
@@ -167,6 +170,18 @@ impl App {
                         {
                             self.help_modal_open = false;
                             ev.request_redraw();
+                        }
+                    } else if self.mode == Mode::Calculator {
+                        if mouse_ev.button == Some(MouseButton::Left) {
+                            if let Some(action) = self.ui.calculator_button_action_at(
+                                x,
+                                y,
+                                self.calc_buttons_extended,
+                            ) {
+                                self.handle_calculator_button_action(action);
+                                self.reset_cursor_blink();
+                                ev.request_redraw();
+                            }
                         }
                     } else if self.mode == Mode::Graph {
                         if mouse_ev.button == Some(MouseButton::Left) {
@@ -522,6 +537,105 @@ impl App {
         if !matches!(result, MathInputResult::Ignored) {
             self.history_index = None;
             self.calc_history_index = None;
+        }
+    }
+
+    fn run_math_command(&mut self, cmd: &str) -> bool {
+        let mut changed = false;
+        if !matches!(self.math_input.handle_char('\\'), MathInputResult::Ignored) {
+            changed = true;
+        }
+        for ch in cmd.chars() {
+            if !matches!(self.math_input.handle_char(ch), MathInputResult::Ignored) {
+                changed = true;
+            }
+        }
+        if !matches!(self.math_input.handle_char(' '), MathInputResult::Ignored) {
+            changed = true;
+        }
+        changed
+    }
+
+    fn insert_math_text(&mut self, text: &str) -> bool {
+        let mut changed = false;
+        for ch in text.chars() {
+            if !matches!(self.math_input.handle_char(ch), MathInputResult::Ignored) {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn handle_calculator_button_action(&mut self, action: CalcButtonAction) {
+        match action {
+            CalcButtonAction::ToggleExtended => {
+                self.calc_buttons_extended = !self.calc_buttons_extended;
+            }
+            CalcButtonAction::Evaluate => {
+                self.evaluate();
+            }
+            CalcButtonAction::Clear => {
+                self.math_input.clear();
+                self.history_index = None;
+                self.calc_history_index = None;
+            }
+            CalcButtonAction::Backspace => {
+                if !matches!(
+                    self.math_input.handle_key(SpecialKey::Backspace),
+                    MathInputResult::Ignored
+                ) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::Delete => {
+                if !matches!(
+                    self.math_input.handle_key(SpecialKey::Delete),
+                    MathInputResult::Ignored
+                ) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::MoveLeft => {
+                if !matches!(
+                    self.math_input.handle_key(SpecialKey::Left),
+                    MathInputResult::Ignored
+                ) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::MoveRight => {
+                if !matches!(
+                    self.math_input.handle_key(SpecialKey::Right),
+                    MathInputResult::Ignored
+                ) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::Tab => {
+                if !matches!(
+                    self.math_input.handle_key(SpecialKey::Tab),
+                    MathInputResult::Ignored
+                ) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::InsertText(text) => {
+                if self.insert_math_text(text) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
+            CalcButtonAction::Command(cmd) => {
+                if self.run_math_command(cmd) {
+                    self.history_index = None;
+                    self.calc_history_index = None;
+                }
+            }
         }
     }
 
@@ -937,6 +1051,7 @@ impl App {
             &self.graph,
             &self.graph3d,
             self.help_modal_open,
+            self.calc_buttons_extended,
         )?;
         Ok(())
     }

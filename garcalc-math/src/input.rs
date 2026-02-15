@@ -121,6 +121,7 @@ impl MathInput {
                 InputResult::Consumed
             }
             '/' => {
+                self.maybe_promote_out_of_script();
                 // Insert fraction
                 self.insert_template(MathBox::fraction_template());
                 InputResult::Consumed
@@ -158,30 +159,37 @@ impl MathInput {
                 InputResult::Consumed
             }
             '+' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Add));
                 InputResult::Consumed
             }
             '-' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Sub));
                 InputResult::Consumed
             }
             '*' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Mul));
                 InputResult::Consumed
             }
             '=' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Eq));
                 InputResult::Consumed
             }
             '<' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Lt));
                 InputResult::Consumed
             }
             '>' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Gt));
                 InputResult::Consumed
             }
             ',' => {
+                self.maybe_promote_out_of_script();
                 self.insert_at_cursor(MathBox::Operator(Operator::Comma));
                 InputResult::Consumed
             }
@@ -351,6 +359,42 @@ impl MathInput {
 
     /// Wrap the current element in a power
     fn wrap_in_power(&mut self) {
+        let current_path = self.cursor.path.clone();
+        let row_offset = self.cursor.offset;
+        let mut row_target = None;
+        {
+            if let Some(MathBox::Row(items)) =
+                Self::get_node_mut_at_path(&mut self.root, &current_path)
+            {
+                let idx = row_offset.min(items.len());
+                let prev_is_operator =
+                    idx > 0 && matches!(items.get(idx - 1), Some(MathBox::Operator(_)));
+                if idx > 0 && !prev_is_operator {
+                    let base = std::mem::replace(&mut items[idx - 1], MathBox::Slot);
+                    items[idx - 1] = MathBox::Power {
+                        base: Box::new(base),
+                        exp: Box::new(MathBox::Slot),
+                    };
+                    row_target = Some(idx - 1);
+                } else {
+                    items.insert(
+                        idx,
+                        MathBox::Power {
+                            base: Box::new(MathBox::Slot),
+                            exp: Box::new(MathBox::Slot),
+                        },
+                    );
+                    row_target = Some(idx);
+                }
+            }
+        }
+        if let Some(item_idx) = row_target {
+            self.cursor.path = current_path;
+            self.cursor.enter(item_idx);
+            self.cursor.enter(1);
+            return;
+        }
+
         if let Some(current) = self.get_current_mut() {
             if !current.is_slot() {
                 let base = std::mem::replace(current, MathBox::Slot);
@@ -373,6 +417,42 @@ impl MathInput {
 
     /// Wrap the current element in a subscript
     fn wrap_in_subscript(&mut self) {
+        let current_path = self.cursor.path.clone();
+        let row_offset = self.cursor.offset;
+        let mut row_target = None;
+        {
+            if let Some(MathBox::Row(items)) =
+                Self::get_node_mut_at_path(&mut self.root, &current_path)
+            {
+                let idx = row_offset.min(items.len());
+                let prev_is_operator =
+                    idx > 0 && matches!(items.get(idx - 1), Some(MathBox::Operator(_)));
+                if idx > 0 && !prev_is_operator {
+                    let base = std::mem::replace(&mut items[idx - 1], MathBox::Slot);
+                    items[idx - 1] = MathBox::Subscript {
+                        base: Box::new(base),
+                        sub: Box::new(MathBox::Slot),
+                    };
+                    row_target = Some(idx - 1);
+                } else {
+                    items.insert(
+                        idx,
+                        MathBox::Subscript {
+                            base: Box::new(MathBox::Slot),
+                            sub: Box::new(MathBox::Slot),
+                        },
+                    );
+                    row_target = Some(idx);
+                }
+            }
+        }
+        if let Some(item_idx) = row_target {
+            self.cursor.path = current_path;
+            self.cursor.enter(item_idx);
+            self.cursor.enter(1);
+            return;
+        }
+
         if let Some(current) = self.get_current_mut() {
             if !current.is_slot() {
                 let base = std::mem::replace(current, MathBox::Slot);
@@ -393,6 +473,54 @@ impl MathInput {
 
     /// Wrap the current element in factorial
     fn wrap_in_factorial(&mut self) {
+        let current_path = self.cursor.path.clone();
+        let row_offset = self.cursor.offset;
+        enum RowFactorialTarget {
+            Wrapped(usize),
+            Inserted(usize),
+        }
+        let mut row_target = None;
+        {
+            if let Some(MathBox::Row(items)) =
+                Self::get_node_mut_at_path(&mut self.root, &current_path)
+            {
+                let idx = row_offset.min(items.len());
+                let prev_is_operator =
+                    idx > 0 && matches!(items.get(idx - 1), Some(MathBox::Operator(_)));
+                if idx > 0 && !prev_is_operator {
+                    let arg = std::mem::replace(&mut items[idx - 1], MathBox::Slot);
+                    items[idx - 1] = MathBox::Func {
+                        name: "factorial".to_string(),
+                        args: vec![arg],
+                    };
+                    row_target = Some(RowFactorialTarget::Wrapped(idx - 1));
+                } else {
+                    items.insert(
+                        idx,
+                        MathBox::Func {
+                            name: "factorial".to_string(),
+                            args: vec![MathBox::Slot],
+                        },
+                    );
+                    row_target = Some(RowFactorialTarget::Inserted(idx));
+                }
+            }
+        }
+        if let Some(target) = row_target {
+            self.cursor.path = current_path;
+            match target {
+                RowFactorialTarget::Wrapped(item_idx) => {
+                    self.cursor.enter(item_idx);
+                    self.cursor.offset = 0;
+                }
+                RowFactorialTarget::Inserted(item_idx) => {
+                    self.cursor.enter(item_idx);
+                    self.cursor.enter(0);
+                }
+            }
+            return;
+        }
+
         if let Some(current) = self.get_current_mut() {
             if !current.is_slot() {
                 let arg = std::mem::replace(current, MathBox::Slot);
@@ -610,6 +738,43 @@ impl MathInput {
         }
     }
 
+    fn cursor_is_at_end_of_current(&self) -> bool {
+        match self.get_current() {
+            Some(MathBox::Number(s)) | Some(MathBox::Symbol(s)) => {
+                self.cursor.offset >= Self::char_count(s)
+            }
+            Some(MathBox::Row(items)) => self.cursor.offset >= items.len(),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Promote cursor out of exponent/subscript when typing operators at script end.
+    fn maybe_promote_out_of_script(&mut self) -> bool {
+        if !self.cursor_is_at_end_of_current() {
+            return false;
+        }
+
+        let Some((&child_idx, parent_path)) = self.cursor.path.split_last() else {
+            return false;
+        };
+        if child_idx != 1 {
+            return false;
+        }
+
+        let is_script = matches!(
+            Self::get_node_at_path(&self.root, parent_path),
+            Some(MathBox::Power { .. }) | Some(MathBox::Subscript { .. })
+        );
+        if !is_script {
+            return false;
+        }
+
+        self.cursor.path = parent_path.to_vec();
+        self.cursor.offset = 0;
+        true
+    }
+
     /// Delete at cursor
     fn delete_at_cursor(&mut self) {
         let path = self.cursor.path.clone();
@@ -742,6 +907,18 @@ impl MathInput {
 
     /// Move cursor left
     fn move_left(&mut self) {
+        let row_prev_idx = match self.get_current() {
+            Some(MathBox::Row(items)) if self.cursor.offset > 0 => {
+                Some(self.cursor.offset.min(items.len()) - 1)
+            }
+            _ => None,
+        };
+        if let Some(prev_idx) = row_prev_idx {
+            self.cursor.enter(prev_idx);
+            self.move_to_end_of_current();
+            return;
+        }
+
         if let Some(current) = self.get_current() {
             if matches!(current, MathBox::Number(_) | MathBox::Symbol(_)) && self.cursor.offset > 0
             {
@@ -764,6 +941,17 @@ impl MathInput {
 
     /// Move cursor right
     fn move_right(&mut self) {
+        let row_next_idx = match self.get_current() {
+            Some(MathBox::Row(items)) if self.cursor.offset < items.len() => {
+                Some(self.cursor.offset)
+            }
+            _ => None,
+        };
+        if let Some(next_idx) = row_next_idx {
+            self.cursor.enter(next_idx);
+            return;
+        }
+
         if let Some(current) = self.get_current() {
             match current {
                 MathBox::Number(s) | MathBox::Symbol(s)
@@ -772,6 +960,9 @@ impl MathInput {
                     self.cursor.offset += 1;
                     return;
                 }
+                // Row uses cursor.offset as an insertion index, so at row boundaries
+                // we should climb out/advance rather than re-enter row child 0.
+                MathBox::Row(_) => {}
                 _ if current.child_count() > 0 => {
                     self.cursor.enter(0);
                     return;
@@ -780,7 +971,8 @@ impl MathInput {
             }
         }
 
-        let mut path = self.cursor.path.clone();
+        let original_path = self.cursor.path.clone();
+        let mut path = original_path.clone();
         while let Some(idx) = path.pop() {
             if let Some(parent) = Self::get_node_at_path(&self.root, &path) {
                 if idx + 1 < parent.child_count() {
@@ -790,6 +982,11 @@ impl MathInput {
                     return;
                 }
             }
+        }
+
+        if let Some((row_path, insert_offset)) = self.row_insertion_after_path(&original_path) {
+            self.cursor.path = row_path;
+            self.cursor.offset = insert_offset;
         }
     }
 
@@ -1078,6 +1275,16 @@ impl MathInput {
                     cursor.push(idx + 1);
                     return Some(cursor);
                 }
+            }
+        }
+        None
+    }
+
+    fn row_insertion_after_path(&self, path: &[usize]) -> Option<(Vec<usize>, usize)> {
+        let mut cursor = path.to_vec();
+        while let Some(idx) = cursor.pop() {
+            if let Some(MathBox::Row(items)) = Self::get_node_at_path(&self.root, &cursor) {
+                return Some((cursor.clone(), (idx + 1).min(items.len())));
             }
         }
         None
@@ -1384,6 +1591,145 @@ mod tests {
             } else {
                 panic!("Expected Power");
             }
+        }
+    }
+
+    #[test]
+    fn test_operator_after_exponent_promotes_outside_power() {
+        let mut input = MathInput::new();
+        input.handle_char('x');
+        input.handle_char('^');
+        input.handle_char('2');
+        input.handle_char('+');
+        input.handle_char('3');
+
+        if let MathBox::Row(items) = &input.root {
+            assert_eq!(items.len(), 3);
+            if let MathBox::Power { base, exp } = &items[0] {
+                assert!(matches!(base.as_ref(), MathBox::Symbol(s) if s == "x"));
+                assert!(matches!(exp.as_ref(), MathBox::Number(s) if s == "2"));
+            } else {
+                panic!("Expected Power");
+            }
+            assert!(matches!(&items[1], MathBox::Operator(Operator::Add)));
+            assert!(matches!(&items[2], MathBox::Number(s) if s == "3"));
+        } else {
+            panic!("Expected Row");
+        }
+    }
+
+    #[test]
+    fn test_right_from_exponent_end_moves_to_row_insertion_point() {
+        let mut input = MathInput::new();
+        input.handle_char('x');
+        input.handle_char('^');
+        input.handle_char('2');
+
+        input.handle_key(SpecialKey::Right);
+        assert_eq!(input.cursor_path(), &[]);
+        assert_eq!(input.cursor_offset(), 1);
+
+        input.handle_char('+');
+        input.handle_char('3');
+
+        if let MathBox::Row(items) = &input.root {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(&items[1], MathBox::Operator(Operator::Add)));
+            assert!(matches!(&items[2], MathBox::Number(s) if s == "3"));
+        } else {
+            panic!("Expected Row");
+        }
+    }
+
+    #[test]
+    fn test_right_from_parenthesized_exponent_can_exit_to_outer_row() {
+        let mut input = MathInput::new();
+        input.handle_char('2');
+        input.handle_char('^');
+        input.handle_char('(');
+        input.handle_char('x');
+        input.handle_char('+');
+        input.handle_char('3');
+
+        // Right #1: from number end to inner-row insertion at end.
+        input.handle_key(SpecialKey::Right);
+        assert_eq!(input.cursor_path(), &[0, 1, 0]);
+        assert_eq!(input.cursor_offset(), 3);
+
+        // Right #2: climb out of exponent context to outer row insertion.
+        input.handle_key(SpecialKey::Right);
+        assert_eq!(input.cursor_path(), &[]);
+        assert_eq!(input.cursor_offset(), 1);
+
+        input.handle_char('+');
+        input.handle_char('4');
+
+        if let MathBox::Row(items) = &input.root {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(&items[1], MathBox::Operator(Operator::Add)));
+            assert!(matches!(&items[2], MathBox::Number(s) if s == "4"));
+        } else {
+            panic!("Expected Row");
+        }
+    }
+
+    #[test]
+    fn test_subscript_after_exponent_at_row_insertion_wraps_power() {
+        let mut input = MathInput::new();
+        input.handle_char('2');
+        input.handle_char('^');
+        input.handle_char('3');
+
+        input.handle_key(SpecialKey::Right);
+        assert_eq!(input.cursor_path(), &[]);
+        assert_eq!(input.cursor_offset(), 1);
+
+        input.handle_char('_');
+        input.handle_char('4');
+
+        if let MathBox::Row(items) = &input.root {
+            assert_eq!(items.len(), 1);
+            if let MathBox::Subscript { base, sub } = &items[0] {
+                if let MathBox::Power {
+                    base: power_base,
+                    exp,
+                } = base.as_ref()
+                {
+                    assert!(matches!(power_base.as_ref(), MathBox::Number(s) if s == "2"));
+                    assert!(matches!(exp.as_ref(), MathBox::Number(s) if s == "3"));
+                } else {
+                    panic!("Expected Power base for subscript");
+                }
+                assert!(matches!(sub.as_ref(), MathBox::Number(s) if s == "4"));
+            } else {
+                panic!("Expected Subscript");
+            }
+        } else {
+            panic!("Expected Row");
+        }
+    }
+
+    #[test]
+    fn test_operator_after_subscript_promotes_outside_subscript() {
+        let mut input = MathInput::new();
+        input.handle_char('x');
+        input.handle_char('_');
+        input.handle_char('1');
+        input.handle_char('+');
+        input.handle_char('2');
+
+        if let MathBox::Row(items) = &input.root {
+            assert_eq!(items.len(), 3);
+            if let MathBox::Subscript { base, sub } = &items[0] {
+                assert!(matches!(base.as_ref(), MathBox::Symbol(s) if s == "x"));
+                assert!(matches!(sub.as_ref(), MathBox::Number(s) if s == "1"));
+            } else {
+                panic!("Expected Subscript");
+            }
+            assert!(matches!(&items[1], MathBox::Operator(Operator::Add)));
+            assert!(matches!(&items[2], MathBox::Number(s) if s == "2"));
+        } else {
+            panic!("Expected Row");
         }
     }
 
