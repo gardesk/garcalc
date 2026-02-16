@@ -8,7 +8,7 @@ use std::f64::consts::{E, PI};
 
 use crate::error::{CasError, Result};
 use crate::expr::{Expr, Rational, Sign, Symbol};
-use crate::symbolic::{Differentiator, Integrator, Limits, Simplifier, Solver};
+use crate::symbolic::{Differentiator, Factorer, Integrator, Limits, Simplifier, Solver};
 
 /// Variable bindings for evaluation
 pub type Environment = HashMap<String, Expr>;
@@ -571,8 +571,31 @@ impl Evaluator {
             }
 
             ("solve", 2, _) => {
+                // solve([eq1, eq2], [x, y]) — system of equations
+                if let (Expr::Vector(equations), Expr::Vector(vars)) = (&args[0], &args[1]) {
+                    let var_symbols: std::result::Result<Vec<Symbol>, _> = vars
+                        .iter()
+                        .map(|v| match v {
+                            Expr::Symbol(s) => Ok(s.clone()),
+                            _ => Err(CasError::Type(
+                                "solve system requires variables as second argument".to_string(),
+                            )),
+                        })
+                        .collect();
+                    let var_symbols = var_symbols?;
+                    let solutions = Solver::solve_system(equations, &var_symbols)?;
+                    // Return as vector of equations: [x = val1, y = val2]
+                    let result: Vec<Expr> = solutions
+                        .into_iter()
+                        .map(|(var, val)| Expr::Equation(
+                            Box::new(Expr::Symbol(var)),
+                            Box::new(val),
+                        ))
+                        .collect();
+                    Ok(Expr::Vector(result))
+                }
                 // solve(expr, var) or solve(equation, var)
-                if let Expr::Symbol(var) = &args[1] {
+                else if let Expr::Symbol(var) = &args[1] {
                     let solutions = Solver::solve(&args[0], var)?;
                     if solutions.len() == 1 {
                         Ok(solutions.into_iter().next().unwrap())
@@ -611,9 +634,19 @@ impl Evaluator {
             ("expand", 1, _) => Ok(Simplifier::simplify(&Simplifier::expand(&args[0]))),
 
             ("factor", 1, _) => {
-                // Basic factoring - just return simplified for now
-                // Full factoring is complex, can add later
-                Ok(Simplifier::simplify(&args[0]))
+                let var = Self::infer_primary_var(&args[0])
+                    .unwrap_or_else(|| Symbol::new("x"));
+                Ok(Factorer::factor(&args[0], &var))
+            }
+
+            ("factor", 2, _) => {
+                if let Expr::Symbol(var) = &args[1] {
+                    Ok(Factorer::factor(&args[0], var))
+                } else {
+                    Err(CasError::Type(
+                        "factor requires variable as second argument".to_string(),
+                    ))
+                }
             }
 
             ("substitute", 3, _) | ("subs", 3, _) => {
@@ -1188,6 +1221,18 @@ impl Evaluator {
     fn infer_iteration_var(body: &Expr) -> Option<crate::expr::Symbol> {
         let mut vars = BTreeSet::new();
         Self::collect_symbols(body, &mut vars);
+        if vars.len() == 1 {
+            vars.into_iter().next().map(crate::expr::Symbol::new)
+        } else {
+            None
+        }
+    }
+
+    fn infer_primary_var(expr: &Expr) -> Option<crate::expr::Symbol> {
+        let mut vars = BTreeSet::new();
+        Self::collect_symbols(expr, &mut vars);
+        vars.remove("pi");
+        vars.remove("e");
         if vars.len() == 1 {
             vars.into_iter().next().map(crate::expr::Symbol::new)
         } else {

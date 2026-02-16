@@ -17,4 +17,4 @@ pub use error::{CasError, Result};
 pub use eval::Evaluator;
 pub use expr::{Expr, LimitDirection, Rational, Sign, Symbol};
 pub use parser::Parser;
-pub use symbolic::{Differentiator, Integrator, Limits, Simplifier, Solver};
+pub use symbolic::{Differentiator, Factorer, Integrator, Limits, Simplifier, Solver};
