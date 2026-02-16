@@ -114,6 +114,22 @@ pub const CURVE_COLORS: [Color; 6] = [
     }, // teal
 ];
 
+/// Viewport preset configurations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportPreset {
+    Standard,
+    Trig,
+    ZoomFit,
+}
+
+/// A plotted function with visibility and label
+#[derive(Debug, Clone)]
+pub struct PlottedFunction {
+    pub func: Plottable,
+    pub visible: bool,
+    pub label: String,
+}
+
 /// 2D graph state and renderer
 pub struct Graph2D {
     /// Current viewport
@@ -121,7 +137,7 @@ pub struct Graph2D {
     /// Plot configuration
     pub config: PlotConfig,
     /// Functions to plot
-    pub functions: Vec<Plottable>,
+    pub functions: Vec<PlottedFunction>,
     /// Trace mode: show cursor position
     pub trace_enabled: bool,
     /// Current trace position (screen coords)
@@ -152,42 +168,164 @@ impl Graph2D {
     }
 
     /// Add a function to plot
-    pub fn add_function(&mut self, func: Plottable) {
-        self.functions.push(func);
+    pub fn add_function(&mut self, func: Plottable, label: String) {
+        self.functions.push(PlottedFunction {
+            func,
+            visible: true,
+            label,
+        });
     }
 
     /// Add an explicit function y = f(x) with auto color
     pub fn add_explicit(&mut self, expr: Expr) {
         let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
-        self.functions.push(Plottable::Explicit2D {
-            expr,
-            x_var: "x".to_string(),
-            color,
-            style: LineStyle::Solid,
+        let label = format!("y = {}", expr);
+        self.functions.push(PlottedFunction {
+            func: Plottable::Explicit2D {
+                expr,
+                x_var: "x".to_string(),
+                color,
+                style: LineStyle::Solid,
+            },
+            visible: true,
+            label,
         });
     }
 
     /// Add an implicit curve F(x,y) = 0
     pub fn add_implicit(&mut self, expr: Expr) {
         let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
-        self.functions.push(Plottable::Implicit2D {
-            expr,
-            x_var: "x".to_string(),
-            y_var: "y".to_string(),
-            color,
+        let label = format!("{} = 0", expr);
+        self.functions.push(PlottedFunction {
+            func: Plottable::Implicit2D {
+                expr,
+                x_var: "x".to_string(),
+                y_var: "y".to_string(),
+                color,
+            },
+            visible: true,
+            label,
         });
     }
 
     /// Add a parametric curve (x(t), y(t))
     pub fn add_parametric(&mut self, x_expr: Expr, y_expr: Expr, t_range: (f64, f64)) {
         let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
-        self.functions.push(Plottable::Parametric2D {
-            x_expr,
-            y_expr,
-            t_var: "t".to_string(),
-            t_range,
-            color,
+        let label = format!("({}, {})", x_expr, y_expr);
+        self.functions.push(PlottedFunction {
+            func: Plottable::Parametric2D {
+                x_expr,
+                y_expr,
+                t_var: "t".to_string(),
+                t_range,
+                color,
+            },
+            visible: true,
+            label,
         });
+    }
+
+    /// Add a polar curve r = f(theta)
+    pub fn add_polar(&mut self, expr: Expr, theta_range: (f64, f64)) {
+        let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
+        let label = format!("r = {}", expr);
+        self.functions.push(PlottedFunction {
+            func: Plottable::Polar2D {
+                expr,
+                theta_var: "theta".to_string(),
+                theta_range,
+                color,
+                style: LineStyle::Solid,
+            },
+            visible: true,
+            label,
+        });
+    }
+
+    /// Add a piecewise function
+    pub fn add_piecewise(&mut self, pieces: Vec<crate::PiecewisePiece>) {
+        let color = CURVE_COLORS[self.functions.len() % CURVE_COLORS.len()];
+        let label = format!("piecewise ({} pieces)", pieces.len());
+        self.functions.push(PlottedFunction {
+            func: Plottable::Piecewise2D {
+                pieces,
+                x_var: "x".to_string(),
+                color,
+                style: LineStyle::Solid,
+            },
+            visible: true,
+            label,
+        });
+    }
+
+    /// Apply a viewport preset
+    pub fn apply_viewport_preset(&mut self, preset: ViewportPreset) {
+        match preset {
+            ViewportPreset::Standard => {
+                self.viewport = Viewport2D::default();
+            }
+            ViewportPreset::Trig => {
+                self.viewport = Viewport2D {
+                    x_min: -2.0 * std::f64::consts::PI,
+                    x_max: 2.0 * std::f64::consts::PI,
+                    y_min: -1.5,
+                    y_max: 1.5,
+                };
+            }
+            ViewportPreset::ZoomFit => {
+                self.zoom_to_fit();
+            }
+        }
+    }
+
+    /// Auto-zoom to fit visible function outputs
+    pub fn zoom_to_fit(&mut self) {
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        let mut evaluator = Evaluator::new();
+        let num_samples = 500;
+        let x_range = self.viewport.x_max - self.viewport.x_min;
+        let dx = x_range / num_samples as f64;
+
+        for pf in &self.functions {
+            if !pf.visible {
+                continue;
+            }
+            if let Plottable::Explicit2D { ref expr, ref x_var, .. } = pf.func {
+                for i in 0..=num_samples {
+                    let x = self.viewport.x_min + i as f64 * dx;
+                    evaluator.set_var(x_var, Expr::Float(x));
+                    if let Ok(result) = evaluator.eval(expr) {
+                        if let Ok(y) = expr_to_f64(&result) {
+                            if y.is_finite() {
+                                y_min = y_min.min(y);
+                                y_max = y_max.max(y);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if y_min.is_finite() && y_max.is_finite() && (y_max - y_min).abs() > 1e-10 {
+            let margin = (y_max - y_min) * 0.1;
+            self.viewport.y_min = y_min - margin;
+            self.viewport.y_max = y_max + margin;
+        }
+    }
+
+    /// Set the color of a function at the given index
+    pub fn set_function_color(&mut self, index: usize, color: crate::Color) {
+        if let Some(pf) = self.functions.get_mut(index) {
+            pf.func.set_color(color);
+        }
+    }
+
+    /// Toggle visibility of function at index
+    pub fn toggle_visibility(&mut self, index: usize) {
+        if let Some(f) = self.functions.get_mut(index) {
+            f.visible = !f.visible;
+        }
     }
 
     /// Clear all functions
@@ -282,8 +420,10 @@ impl Graph2D {
         self.draw_axes(ctx, width, height);
 
         // Functions
-        for func in &self.functions {
-            self.draw_function(ctx, func, width, height);
+        for pf in &self.functions {
+            if pf.visible {
+                self.draw_function(ctx, &pf.func, width, height);
+            }
         }
 
         // Trace
@@ -425,6 +565,23 @@ impl Graph2D {
                 color,
             } => {
                 self.draw_parametric(ctx, x_expr, y_expr, t_var, *t_range, *color, width, height);
+            }
+            Plottable::Polar2D {
+                expr,
+                theta_var,
+                theta_range,
+                color,
+                style,
+            } => {
+                self.draw_polar(ctx, expr, theta_var, *theta_range, *color, *style, width, height);
+            }
+            Plottable::Piecewise2D {
+                pieces,
+                x_var,
+                color,
+                style,
+            } => {
+                self.draw_piecewise(ctx, pieces, x_var, *color, *style, width, height);
             }
             _ => {}
         }
@@ -669,6 +826,381 @@ impl Graph2D {
         }
 
         let _ = ctx.stroke();
+    }
+
+    fn draw_polar(
+        &self,
+        ctx: &Context,
+        expr: &Expr,
+        theta_var: &str,
+        theta_range: (f64, f64),
+        color: Color,
+        style: LineStyle,
+        width: u32,
+        height: u32,
+    ) {
+        set_color(ctx, color);
+        ctx.set_line_width(self.config.curve_width);
+        match style {
+            LineStyle::Solid => ctx.set_dash(&[], 0.0),
+            LineStyle::Dashed => ctx.set_dash(&[6.0, 4.0], 0.0),
+            LineStyle::Dotted => ctx.set_dash(&[2.0, 2.0], 0.0),
+        }
+
+        let mut evaluator = Evaluator::new();
+        let num_samples = (width as f64 * self.config.samples_per_pixel) as usize;
+        let theta_span = theta_range.1 - theta_range.0;
+        let dtheta = theta_span / num_samples as f64;
+        let mut first = true;
+
+        for i in 0..=num_samples {
+            let theta = theta_range.0 + i as f64 * dtheta;
+            evaluator.set_var(theta_var, Expr::Float(theta));
+            if let Ok(result) = evaluator.eval(expr) {
+                if let Ok(r) = expr_to_f64(&result) {
+                    if r.is_finite() {
+                        let math_x = r * theta.cos();
+                        let math_y = r * theta.sin();
+                        let (sx, sy) = self.math_to_screen(math_x, math_y, width, height);
+                        if first {
+                            ctx.move_to(sx, sy);
+                            first = false;
+                        } else {
+                            ctx.line_to(sx, sy);
+                        }
+                        continue;
+                    }
+                }
+            }
+            if !first {
+                let _ = ctx.stroke();
+                first = true;
+            }
+        }
+        let _ = ctx.stroke();
+        ctx.set_dash(&[], 0.0);
+    }
+
+    fn draw_piecewise(
+        &self,
+        ctx: &Context,
+        pieces: &[crate::PiecewisePiece],
+        x_var: &str,
+        color: Color,
+        style: LineStyle,
+        width: u32,
+        height: u32,
+    ) {
+        set_color(ctx, color);
+        ctx.set_line_width(self.config.curve_width);
+        match style {
+            LineStyle::Solid => ctx.set_dash(&[], 0.0),
+            LineStyle::Dashed => ctx.set_dash(&[6.0, 4.0], 0.0),
+            LineStyle::Dotted => ctx.set_dash(&[2.0, 2.0], 0.0),
+        }
+
+        let mut evaluator = Evaluator::new();
+        let num_samples = (width as f64 * self.config.samples_per_pixel) as usize;
+        let x_range = self.viewport.x_max - self.viewport.x_min;
+        let dx = x_range / num_samples as f64;
+        let mut first = true;
+        let mut last_valid = false;
+        let mut last_piece_idx: Option<usize> = None;
+
+        for i in 0..=num_samples {
+            let math_x = self.viewport.x_min + i as f64 * dx;
+            let piece_idx = pieces.iter().position(|p| p.condition.matches(math_x));
+
+            if piece_idx != last_piece_idx && last_valid {
+                let _ = ctx.stroke();
+                first = true;
+                last_valid = false;
+            }
+            last_piece_idx = piece_idx;
+
+            if let Some(idx) = piece_idx {
+                evaluator.set_var(x_var, Expr::Float(math_x));
+                if let Ok(result) = evaluator.eval(&pieces[idx].expr) {
+                    if let Ok(math_y) = expr_to_f64(&result) {
+                        if math_y.is_finite()
+                            && math_y >= self.viewport.y_min - x_range
+                            && math_y <= self.viewport.y_max + x_range
+                        {
+                            let (sx, sy) = self.math_to_screen(math_x, math_y, width, height);
+                            if first || !last_valid {
+                                ctx.move_to(sx, sy);
+                                first = false;
+                            } else {
+                                ctx.line_to(sx, sy);
+                            }
+                            last_valid = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if last_valid {
+                let _ = ctx.stroke();
+            }
+            last_valid = false;
+        }
+        let _ = ctx.stroke();
+        ctx.set_dash(&[], 0.0);
+    }
+
+    /// Find zeros (x-intercepts) of all visible Explicit2D functions
+    pub fn find_zeros(&self) -> Vec<(usize, Vec<(f64, f64)>)> {
+        let mut result = Vec::new();
+        for (idx, pf) in self.functions.iter().enumerate() {
+            if !pf.visible {
+                continue;
+            }
+            if let Plottable::Explicit2D { ref expr, ref x_var, .. } = pf.func {
+                let zeros = self.find_zeros_for_expr(expr, x_var);
+                if !zeros.is_empty() {
+                    result.push((idx, zeros));
+                }
+            }
+        }
+        result
+    }
+
+    fn find_zeros_for_expr(&self, expr: &Expr, x_var: &str) -> Vec<(f64, f64)> {
+        let mut evaluator = Evaluator::new();
+        let mut zeros = Vec::new();
+        let num_samples = 500;
+        let x_range = self.viewport.x_max - self.viewport.x_min;
+        let dx = x_range / num_samples as f64;
+
+        let eval_at = |eval: &mut Evaluator, x: f64| -> Option<f64> {
+            eval.set_var(x_var, Expr::Float(x));
+            eval.eval(expr)
+                .ok()
+                .and_then(|r| expr_to_f64(&r).ok())
+                .filter(|y| y.is_finite())
+        };
+
+        let mut prev: Option<f64> = None;
+        let mut prev_x = self.viewport.x_min;
+
+        for i in 0..=num_samples {
+            let x = self.viewport.x_min + i as f64 * dx;
+            if let Some(y) = eval_at(&mut evaluator, x) {
+                if let Some(py) = prev {
+                    if py * y < 0.0 {
+                        if let Some(zx) = self.bisect(expr, x_var, prev_x, x, 50) {
+                            if zeros
+                                .last()
+                                .map_or(true, |&(lx, _): &(f64, f64)| (lx - zx).abs() > dx * 0.1)
+                            {
+                                zeros.push((zx, 0.0));
+                            }
+                        }
+                    }
+                }
+                prev = Some(y);
+                prev_x = x;
+            } else {
+                prev = None;
+            }
+        }
+        zeros
+    }
+
+    fn bisect(
+        &self,
+        expr: &Expr,
+        x_var: &str,
+        mut a: f64,
+        mut b: f64,
+        max_iter: usize,
+    ) -> Option<f64> {
+        let mut evaluator = Evaluator::new();
+        let eval_at = |eval: &mut Evaluator, x: f64| -> Option<f64> {
+            eval.set_var(x_var, Expr::Float(x));
+            eval.eval(expr)
+                .ok()
+                .and_then(|r| expr_to_f64(&r).ok())
+                .filter(|y| y.is_finite())
+        };
+
+        let fa = eval_at(&mut evaluator, a)?;
+        if fa.abs() < 1e-12 {
+            return Some(a);
+        }
+
+        for _ in 0..max_iter {
+            let mid = (a + b) / 2.0;
+            let fm = eval_at(&mut evaluator, mid)?;
+            if fm.abs() < 1e-12 || (b - a).abs() < 1e-12 {
+                return Some(mid);
+            }
+            if fa * fm < 0.0 {
+                b = mid;
+            } else {
+                a = mid;
+            }
+        }
+        Some((a + b) / 2.0)
+    }
+
+    /// Find intersections between pairs of visible Explicit2D functions
+    pub fn find_intersections(&self) -> Vec<((usize, usize), Vec<(f64, f64)>)> {
+        let mut result = Vec::new();
+        let explicit_indices: Vec<usize> = self
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, pf)| pf.visible && matches!(pf.func, Plottable::Explicit2D { .. }))
+            .map(|(i, _)| i)
+            .collect();
+
+        for i in 0..explicit_indices.len() {
+            for j in (i + 1)..explicit_indices.len() {
+                let idx_i = explicit_indices[i];
+                let idx_j = explicit_indices[j];
+                let points = self.find_intersection_points(idx_i, idx_j);
+                if !points.is_empty() {
+                    result.push(((idx_i, idx_j), points));
+                }
+            }
+        }
+        result
+    }
+
+    fn find_intersection_points(&self, idx_i: usize, idx_j: usize) -> Vec<(f64, f64)> {
+        let (expr_i, var_i) = match &self.functions[idx_i].func {
+            Plottable::Explicit2D { expr, x_var, .. } => (expr, x_var.as_str()),
+            _ => return Vec::new(),
+        };
+        let (expr_j, _) = match &self.functions[idx_j].func {
+            Plottable::Explicit2D { expr, x_var, .. } => (expr, x_var.as_str()),
+            _ => return Vec::new(),
+        };
+
+        let mut eval_i = Evaluator::new();
+        let mut eval_j = Evaluator::new();
+        let mut points = Vec::new();
+        let num_samples = 500;
+        let x_range = self.viewport.x_max - self.viewport.x_min;
+        let dx = x_range / num_samples as f64;
+
+        let eval_diff = |ei: &mut Evaluator, ej: &mut Evaluator, x: f64| -> Option<f64> {
+            ei.set_var(var_i, Expr::Float(x));
+            ej.set_var(var_i, Expr::Float(x));
+            let yi = ei.eval(expr_i).ok().and_then(|r| expr_to_f64(&r).ok())?;
+            let yj = ej.eval(expr_j).ok().and_then(|r| expr_to_f64(&r).ok())?;
+            if yi.is_finite() && yj.is_finite() {
+                Some(yi - yj)
+            } else {
+                None
+            }
+        };
+
+        let mut prev_diff: Option<f64> = None;
+        let mut prev_x = self.viewport.x_min;
+
+        for i in 0..=num_samples {
+            let x = self.viewport.x_min + i as f64 * dx;
+            if let Some(diff) = eval_diff(&mut eval_i, &mut eval_j, x) {
+                if let Some(pd) = prev_diff {
+                    if pd * diff < 0.0 {
+                        let mut a = prev_x;
+                        let mut b = x;
+                        for _ in 0..50 {
+                            let mid = (a + b) / 2.0;
+                            if let Some(dm) = eval_diff(&mut eval_i, &mut eval_j, mid) {
+                                if dm.abs() < 1e-12 || (b - a).abs() < 1e-12 {
+                                    a = mid;
+                                    b = mid;
+                                    break;
+                                }
+                                if pd * dm < 0.0 {
+                                    b = mid;
+                                } else {
+                                    a = mid;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        let zx = (a + b) / 2.0;
+                        eval_i.set_var(var_i, Expr::Float(zx));
+                        if let Ok(r) = eval_i.eval(expr_i) {
+                            if let Ok(zy) = expr_to_f64(&r) {
+                                if zy.is_finite()
+                                    && points.last().map_or(true, |&(lx, _): &(f64, f64)| {
+                                        (lx - zx).abs() > dx * 0.1
+                                    })
+                                {
+                                    points.push((zx, zy));
+                                }
+                            }
+                        }
+                    }
+                }
+                prev_diff = Some(diff);
+                prev_x = x;
+            } else {
+                prev_diff = None;
+            }
+        }
+        points
+    }
+
+    /// Draw marker circles at given points
+    pub fn draw_markers(
+        &self,
+        ctx: &Context,
+        points: &[(f64, f64)],
+        color: Color,
+        width: u32,
+        height: u32,
+    ) {
+        set_color(ctx, color);
+        for &(mx, my) in points {
+            let (sx, sy) = self.math_to_screen(mx, my, width, height);
+            ctx.arc(sx, sy, 4.0, 0.0, std::f64::consts::TAU);
+            let _ = ctx.fill();
+
+            let label = format!("({:.3}, {:.3})", mx, my);
+            ctx.set_font_size(10.0);
+            ctx.move_to(sx + 6.0, sy - 6.0);
+            let _ = ctx.show_text(&label);
+        }
+    }
+
+    /// Generate a table of (x, f(x)) values for an Explicit2D function
+    pub fn generate_table(
+        &self,
+        func_index: usize,
+        x_min: f64,
+        x_max: f64,
+        step: f64,
+    ) -> Vec<(f64, Option<f64>)> {
+        let pf = match self.functions.get(func_index) {
+            Some(f) => f,
+            None => return Vec::new(),
+        };
+        let (expr, x_var) = match &pf.func {
+            Plottable::Explicit2D { expr, x_var, .. } => (expr, x_var.as_str()),
+            _ => return Vec::new(),
+        };
+
+        let mut evaluator = Evaluator::new();
+        let mut table = Vec::new();
+        let mut x = x_min;
+        while x <= x_max + step * 0.01 {
+            evaluator.set_var(x_var, Expr::Float(x));
+            let y = evaluator
+                .eval(expr)
+                .ok()
+                .and_then(|r| expr_to_f64(&r).ok())
+                .filter(|v| v.is_finite());
+            table.push((x, y));
+            x += step;
+        }
+        table
     }
 
     fn draw_trace(&self, ctx: &Context, sx: f64, sy: f64, width: u32, height: u32) {
