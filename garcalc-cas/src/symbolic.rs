@@ -445,6 +445,46 @@ impl Integrator {
                     ));
                 }
 
+                // Linear substitution: ∫ (ax+b)^n dx = (ax+b)^(n+1) / (a*(n+1))
+                if !exp.contains_var(var) {
+                    if let Some((a, _b)) = Self::extract_linear(base, var) {
+                        if exp.is_negative_one() {
+                            // ∫ (ax+b)^(-1) dx = ln|ax+b| / a
+                            return Ok(Expr::div(
+                                Expr::func("ln", vec![Expr::func("abs", vec![(**base).clone()])]),
+                                a,
+                            ));
+                        }
+                        let n_plus_1 = Expr::add(vec![(**exp).clone(), Expr::Integer(1)]);
+                        return Ok(Expr::div(
+                            Expr::pow((**base).clone(), n_plus_1.clone()),
+                            Expr::mul(vec![a, n_plus_1]),
+                        ));
+                    }
+                }
+
+                // Linear substitution for exponentials: ∫ e^(ax+b) dx = e^(ax+b) / a
+                if let Expr::Symbol(s) = &**base {
+                    if s.as_str() == "e" {
+                        if let Some((a, _b)) = Self::extract_linear(exp, var) {
+                            return Ok(Expr::div(
+                                Expr::pow(Expr::symbol("e"), (**exp).clone()),
+                                a,
+                            ));
+                        }
+                    }
+                }
+
+                // ∫ a^(cx+d) dx = a^(cx+d) / (c * ln(a))
+                if !base.contains_var(var) {
+                    if let Some((c, _d)) = Self::extract_linear(exp, var) {
+                        return Ok(Expr::div(
+                            expr.clone(),
+                            Expr::mul(vec![c, Expr::func("ln", vec![(**base).clone()])]),
+                        ));
+                    }
+                }
+
                 // Return unevaluated
                 Ok(Expr::Integral {
                     expr: Box::new(expr.clone()),
@@ -473,6 +513,18 @@ impl Integrator {
             return Self::integrate(factors[0], var);
         }
 
+        // U-substitution: look for f(g(x)) * g'(x) patterns
+        // For each pair of factors, check if one is the derivative of the inner
+        // function of the other (up to a constant multiple).
+        if factors.len() == 2 {
+            // Try both orderings: factor[0] as f(g(x)), factor[1] as g'(x) and vice versa
+            for (fi, fj) in [(0, 1), (1, 0)] {
+                if let Some(result) = Self::try_u_substitution(factors[fi], factors[fj], var) {
+                    return Ok(result);
+                }
+            }
+        }
+
         // Return unevaluated
         Ok(Expr::Integral {
             expr: Box::new(Expr::mul(factors.iter().map(|f| (*f).clone()).collect())),
@@ -480,6 +532,223 @@ impl Integrator {
             lower: None,
             upper: None,
         })
+    }
+
+    /// Try u-substitution: given f_expr (containing g(x)) and candidate g'(x),
+    /// check if candidate equals g'(x) up to a constant, and if so compute the integral.
+    fn try_u_substitution(f_expr: &Expr, candidate_deriv: &Expr, var: &Symbol) -> Option<Expr> {
+        // Extract inner function g(x) from f_expr
+        let inner = Self::extract_inner_function(f_expr, var)?;
+
+        // Compute g'(x)
+        let g_prime = Differentiator::diff(&inner, var).ok()?;
+        let g_prime_simplified = Simplifier::simplify(&g_prime);
+
+        // Check if candidate_deriv = c * g'(x) for some constant c
+        let constant_multiple = Self::is_constant_multiple(candidate_deriv, &g_prime_simplified, var)?;
+
+        // Build f(u) by replacing g(x) with u in f_expr
+        let u = Symbol::new("_u_sub_");
+        let f_of_u = Self::replace_subexpr(f_expr, &inner, &Expr::Symbol(u.clone()));
+
+        // If substitution didn't fully replace var, this pattern doesn't work
+        if f_of_u.contains_var(var) {
+            return None;
+        }
+
+        let antideriv = Self::integrate(&f_of_u, &u).ok()?;
+        // Check it's not unevaluated
+        if matches!(&antideriv, Expr::Integral { .. }) {
+            return None;
+        }
+
+        // Substitute g(x) back for u
+        let result = Simplifier::substitute(&antideriv, &u, &inner);
+
+        // Multiply by constant_multiple
+        if constant_multiple.is_one() {
+            Some(result)
+        } else {
+            Some(Expr::mul(vec![constant_multiple, result]))
+        }
+    }
+
+    /// Replace occurrences of `target` subexpression with `replacement` in `expr`.
+    fn replace_subexpr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
+        if Self::exprs_structurally_equal(expr, target) {
+            return replacement.clone();
+        }
+        match expr {
+            Expr::Neg(e) => Expr::neg(Self::replace_subexpr(e, target, replacement)),
+            Expr::Add(terms) => Expr::add(
+                terms.iter().map(|t| Self::replace_subexpr(t, target, replacement)).collect(),
+            ),
+            Expr::Mul(factors) => Expr::mul(
+                factors.iter().map(|f| Self::replace_subexpr(f, target, replacement)).collect(),
+            ),
+            Expr::Pow(base, exp) => Expr::pow(
+                Self::replace_subexpr(base, target, replacement),
+                Self::replace_subexpr(exp, target, replacement),
+            ),
+            Expr::Func(name, args) => Expr::func(
+                name,
+                args.iter().map(|a| Self::replace_subexpr(a, target, replacement)).collect(),
+            ),
+            _ => expr.clone(),
+        }
+    }
+
+    /// Extract the inner function g(x) from an expression that looks like f(g(x)).
+    /// Returns the innermost composite argument that contains `var`.
+    fn extract_inner_function(expr: &Expr, var: &Symbol) -> Option<Expr> {
+        match expr {
+            // f(g(x)) — the inner function is g(x)
+            Expr::Func(_name, args) if args.len() == 1 => {
+                let arg = &args[0];
+                if *arg != Expr::Symbol(var.clone()) && arg.contains_var(var) {
+                    Some(arg.clone())
+                } else {
+                    None
+                }
+            }
+            // (g(x))^n — the inner function is g(x) if g(x) is not just x
+            Expr::Pow(base, exp) if !exp.contains_var(var) && base.contains_var(var) => {
+                if **base != Expr::Symbol(var.clone()) {
+                    Some((**base).clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if `expr` is a constant multiple of `target` w.r.t. `var`.
+    /// Returns the constant factor if so.
+    fn is_constant_multiple(expr: &Expr, target: &Expr, var: &Symbol) -> Option<Expr> {
+        // Simplify both for comparison
+        let expr_s = Simplifier::simplify(expr);
+        let target_s = Simplifier::simplify(target);
+
+        // Direct equality: multiple is 1
+        if Self::exprs_structurally_equal(&expr_s, &target_s) {
+            return Some(Expr::Integer(1));
+        }
+
+        // Check if expr = c * target where c is constant
+        // Try dividing: if expr/target simplifies to a constant, that's our multiple
+        let ratio = Expr::div(expr_s.clone(), target_s.clone());
+        let ratio_simplified = Simplifier::simplify(&ratio);
+        if !ratio_simplified.contains_var(var) {
+            return Some(ratio_simplified);
+        }
+
+        None
+    }
+
+    /// Simple structural equality check (after simplification)
+    fn exprs_structurally_equal(a: &Expr, b: &Expr) -> bool {
+        match (a, b) {
+            (Expr::Integer(x), Expr::Integer(y)) => x == y,
+            (Expr::Float(x), Expr::Float(y)) => (x - y).abs() < 1e-12,
+            (Expr::Symbol(x), Expr::Symbol(y)) => x == y,
+            (Expr::Neg(x), Expr::Neg(y)) => Self::exprs_structurally_equal(x, y),
+            (Expr::Add(xs), Expr::Add(ys)) | (Expr::Mul(xs), Expr::Mul(ys)) => {
+                xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .all(|(x, y)| Self::exprs_structurally_equal(x, y))
+            }
+            (Expr::Pow(xb, xe), Expr::Pow(yb, ye)) => {
+                Self::exprs_structurally_equal(xb, yb) && Self::exprs_structurally_equal(xe, ye)
+            }
+            (Expr::Func(xn, xa), Expr::Func(yn, ya)) => {
+                xn == yn
+                    && xa.len() == ya.len()
+                    && xa
+                        .iter()
+                        .zip(ya.iter())
+                        .all(|(x, y)| Self::exprs_structurally_equal(x, y))
+            }
+            (Expr::Rational(x), Expr::Rational(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    /// Extract the linear form ax + b from an expression, returning (a, b).
+    /// Returns None if the expression is not linear in `var`.
+    fn extract_linear(expr: &Expr, var: &Symbol) -> Option<(Expr, Expr)> {
+        match expr {
+            // Just x → (1, 0)
+            Expr::Symbol(s) if s == var => Some((Expr::Integer(1), Expr::Integer(0))),
+
+            // a*x or x*a → (a, 0)
+            Expr::Mul(factors) => {
+                let (constants, var_factors): (Vec<_>, Vec<_>) =
+                    factors.iter().partition(|f| !f.contains_var(var));
+                // Need exactly one var factor that is x
+                if var_factors.len() == 1 && *var_factors[0] == Expr::Symbol(var.clone()) {
+                    let a = if constants.is_empty() {
+                        Expr::Integer(1)
+                    } else {
+                        Expr::mul(constants.into_iter().cloned().collect())
+                    };
+                    Some((a, Expr::Integer(0)))
+                } else {
+                    None
+                }
+            }
+
+            // ax + b or b + ax
+            Expr::Add(terms) => {
+                let mut a = Expr::Integer(0);
+                let mut b_parts = Vec::new();
+                for term in terms {
+                    if !term.contains_var(var) {
+                        b_parts.push(term.clone());
+                    } else if *term == Expr::Symbol(var.clone()) {
+                        a = Expr::add(vec![a, Expr::Integer(1)]);
+                    } else if let Expr::Mul(factors) = term {
+                        let (constants, var_factors): (Vec<_>, Vec<_>) =
+                            factors.iter().partition(|f| !f.contains_var(var));
+                        if var_factors.len() == 1 && *var_factors[0] == Expr::Symbol(var.clone()) {
+                            let coeff = if constants.is_empty() {
+                                Expr::Integer(1)
+                            } else {
+                                Expr::mul(constants.into_iter().cloned().collect())
+                            };
+                            a = Expr::add(vec![a, coeff]);
+                        } else {
+                            return None; // Non-linear term
+                        }
+                    } else {
+                        return None; // Non-linear term containing var
+                    }
+                }
+                let a = Simplifier::simplify(&a);
+                if a.is_zero() {
+                    return None; // No linear term
+                }
+                let b = if b_parts.is_empty() {
+                    Expr::Integer(0)
+                } else {
+                    Expr::add(b_parts)
+                };
+                Some((a, b))
+            }
+
+            // -x → (-1, 0)
+            Expr::Neg(inner) => {
+                if **inner == Expr::Symbol(var.clone()) {
+                    Some((Expr::Integer(-1), Expr::Integer(0)))
+                } else {
+                    None
+                }
+            }
+
+            _ => None,
+        }
     }
 
     fn integrate_func(name: &str, args: &[Expr], var: &Symbol) -> Result<Expr> {
@@ -494,8 +763,19 @@ impl Integrator {
 
         let arg = &args[0];
 
-        // Only handle simple case where arg = var
+        // Try linear substitution: ∫ f(ax+b) dx = (1/a)*F(ax+b)
         if *arg != Expr::Symbol(var.clone()) {
+            if let Some((a, _b)) = Self::extract_linear(arg, var) {
+                // Integrate as if arg = var, then divide by the linear coefficient
+                let simple_var = Expr::Symbol(var.clone());
+                let simple_integral = Self::integrate_func(name, &[simple_var], var)?;
+                // Check we actually got an antiderivative (not unevaluated)
+                if !matches!(&simple_integral, Expr::Integral { .. }) {
+                    // Substitute ax+b for x in the result, then divide by a
+                    let substituted = Simplifier::substitute(&simple_integral, var, arg);
+                    return Ok(Expr::div(substituted, a));
+                }
+            }
             return Ok(Expr::Integral {
                 expr: Box::new(Expr::func(name, args.to_vec())),
                 var: var.clone(),
