@@ -2447,6 +2447,561 @@ impl Solver {
             var_coef,
         ))])
     }
+
+    /// Solve a system of linear equations using Gaussian elimination.
+    /// `equations` is a list of Expr (each is an Equation or an expression = 0).
+    /// `vars` is the ordered list of unknowns.
+    /// Returns a Vec of (var, solution) pairs.
+    pub fn solve_system(equations: &[Expr], vars: &[Symbol]) -> Result<Vec<(Symbol, Expr)>> {
+        let n = vars.len();
+        if equations.len() < n {
+            return Err(CasError::EvaluationError(
+                "Underdetermined system: fewer equations than unknowns".to_string(),
+            ));
+        }
+
+        // Build augmented matrix [A | b] where Ax = b
+        // For each equation, extract linear coefficients for each var and constant term
+        let mut matrix: Vec<Vec<Expr>> = Vec::with_capacity(n);
+        for eq in equations.iter().take(n) {
+            let expr = match eq {
+                Expr::Equation(lhs, rhs) => {
+                    Simplifier::simplify(&Expr::sub((**lhs).clone(), (**rhs).clone()))
+                }
+                other => Simplifier::simplify(other),
+            };
+            let mut row = Vec::with_capacity(n + 1);
+            for var in vars {
+                let coeff = Self::extract_linear_coefficient(&expr, var);
+                row.push(coeff);
+            }
+            // Constant term: negate the constant part (moving to RHS)
+            let constant = Self::extract_constant_part(&expr, vars);
+            row.push(Expr::neg(constant));
+            matrix.push(row);
+        }
+
+        // Gaussian elimination with partial pivoting
+        for col in 0..n {
+            // Find pivot row (first non-zero in column)
+            let mut pivot_row = None;
+            for row in col..n {
+                if !Self::is_expr_zero(&matrix[row][col]) {
+                    pivot_row = Some(row);
+                    break;
+                }
+            }
+            let pivot_row = match pivot_row {
+                Some(r) => r,
+                None => {
+                    return Err(CasError::EvaluationError(
+                        "System has no unique solution (singular matrix)".to_string(),
+                    ));
+                }
+            };
+
+            // Swap pivot row to current position
+            if pivot_row != col {
+                matrix.swap(col, pivot_row);
+            }
+
+            // Eliminate below
+            let pivot = matrix[col][col].clone();
+            for row in (col + 1)..n {
+                let factor = matrix[row][col].clone();
+                if Self::is_expr_zero(&factor) {
+                    continue;
+                }
+                for j in col..=n {
+                    let old = matrix[row][j].clone();
+                    // new = old * pivot - factor * matrix[col][j]
+                    let new_val = Simplifier::simplify(&Expr::sub(
+                        Expr::mul(vec![old, pivot.clone()]),
+                        Expr::mul(vec![factor.clone(), matrix[col][j].clone()]),
+                    ));
+                    matrix[row][j] = new_val;
+                }
+            }
+        }
+
+        // Back substitution
+        let mut solutions = vec![Expr::Integer(0); n];
+        for i in (0..n).rev() {
+            let mut rhs = matrix[i][n].clone();
+            for j in (i + 1)..n {
+                rhs = Simplifier::simplify(&Expr::sub(
+                    rhs,
+                    Expr::mul(vec![matrix[i][j].clone(), solutions[j].clone()]),
+                ));
+            }
+            if Self::is_expr_zero(&matrix[i][i]) {
+                return Err(CasError::EvaluationError(
+                    "System has no unique solution (singular matrix)".to_string(),
+                ));
+            }
+            solutions[i] = Simplifier::simplify(&Expr::div(rhs, matrix[i][i].clone()));
+        }
+
+        Ok(vars.iter().cloned().zip(solutions).collect())
+    }
+
+    /// Extract the coefficient of `var` from a simplified linear expression.
+    fn extract_linear_coefficient(expr: &Expr, var: &Symbol) -> Expr {
+        match expr {
+            Expr::Symbol(s) if s == var => Expr::Integer(1),
+            Expr::Symbol(_) | Expr::Integer(_) | Expr::Float(_) | Expr::Rational(_) => {
+                Expr::Integer(0)
+            }
+            Expr::Neg(inner) => {
+                let c = Self::extract_linear_coefficient(inner, var);
+                Simplifier::simplify(&Expr::neg(c))
+            }
+            Expr::Mul(factors) => {
+                // Check if one factor is var and rest are constant
+                let mut has_var = false;
+                let mut coef_parts = Vec::new();
+                for f in factors {
+                    if *f == Expr::Symbol(var.clone()) && !has_var {
+                        has_var = true;
+                    } else {
+                        coef_parts.push(f.clone());
+                    }
+                }
+                if has_var {
+                    if coef_parts.is_empty() {
+                        Expr::Integer(1)
+                    } else {
+                        Simplifier::simplify(&Expr::mul(coef_parts))
+                    }
+                } else {
+                    Expr::Integer(0)
+                }
+            }
+            Expr::Add(terms) => {
+                let coeffs: Vec<Expr> = terms
+                    .iter()
+                    .map(|t| Self::extract_linear_coefficient(t, var))
+                    .collect();
+                Simplifier::simplify(&Expr::add(coeffs))
+            }
+            _ => Expr::Integer(0),
+        }
+    }
+
+    /// Extract the constant part (terms not containing any of the given variables).
+    fn extract_constant_part(expr: &Expr, vars: &[Symbol]) -> Expr {
+        match expr {
+            Expr::Add(terms) => {
+                let constants: Vec<Expr> = terms
+                    .iter()
+                    .filter(|t| !vars.iter().any(|v| t.contains_var(v)))
+                    .cloned()
+                    .collect();
+                if constants.is_empty() {
+                    Expr::Integer(0)
+                } else {
+                    Simplifier::simplify(&Expr::add(constants))
+                }
+            }
+            _ if !vars.iter().any(|v| expr.contains_var(v)) => expr.clone(),
+            _ => Expr::Integer(0),
+        }
+    }
+
+    /// Check if an expression simplifies to zero.
+    fn is_expr_zero(expr: &Expr) -> bool {
+        let s = Simplifier::simplify(expr);
+        s.is_zero()
+    }
+}
+
+/// Polynomial factoring
+pub struct Factorer;
+
+impl Factorer {
+    /// Factor a polynomial expression with respect to a variable
+    pub fn factor(expr: &Expr, var: &Symbol) -> Expr {
+        let simplified = Simplifier::simplify(expr);
+
+        // Try to extract polynomial coefficients (highest degree first)
+        let coeffs = match Self::extract_polynomial_coefficients(&simplified, var) {
+            Some(c) if c.len() >= 2 => c,
+            _ => return simplified,
+        };
+
+        let degree = coeffs.len() - 1;
+
+        // Factor out GCD coefficient
+        let (gcd_coef, normed) = Self::factor_gcd_coefficient(&coeffs);
+
+        // Try difference of squares: ax^2 + c where b=0
+        if degree == 2 {
+            if let [a, b, c] = normed.as_slice() {
+                if *b == 0 {
+                    if let Some(result) = Self::try_difference_of_squares(*a, *c, var) {
+                        return Self::wrap_gcd(gcd_coef, result);
+                    }
+                }
+                // Try perfect square trinomial
+                if let Some(result) = Self::try_perfect_square(*a, *b, *c, var) {
+                    return Self::wrap_gcd(gcd_coef, result);
+                }
+                // Factor quadratic with rational roots
+                if let Some(result) = Self::factor_quadratic(*a, *b, *c, var) {
+                    return Self::wrap_gcd(gcd_coef, result);
+                }
+            }
+        }
+
+        // For higher degree, try rational root theorem
+        if degree >= 3 {
+            if let Some(result) = Self::factor_by_rational_roots(&normed, var) {
+                return Self::wrap_gcd(gcd_coef, result);
+            }
+        }
+
+        // Factor out common variable power: 3x^3 + 6x^2 -> 3x^2(x+2)
+        if degree >= 2 {
+            let trailing_zeros = normed.iter().rev().take_while(|&&c| c == 0).count();
+            if trailing_zeros > 0 {
+                let reduced: Vec<i64> = normed[..normed.len() - trailing_zeros].to_vec();
+                let x_power = trailing_zeros as u32;
+                let x_factor = if x_power == 1 {
+                    Expr::Symbol(var.clone())
+                } else {
+                    Expr::pow(Expr::Symbol(var.clone()), Expr::Integer(x_power as i64))
+                };
+                let inner = Self::coeffs_to_expr(&reduced, var);
+                let factored_inner = Self::factor(&inner, var);
+                return Self::wrap_gcd(gcd_coef, Expr::mul(vec![x_factor, factored_inner]));
+            }
+        }
+
+        simplified
+    }
+
+    /// Extract integer polynomial coefficients [a_n, a_{n-1}, ..., a_1, a_0]
+    /// where the polynomial is a_n*x^n + ... + a_1*x + a_0
+    fn extract_polynomial_coefficients(expr: &Expr, var: &Symbol) -> Option<Vec<i64>> {
+        let terms = match expr {
+            Expr::Add(t) => t.clone(),
+            other => vec![other.clone()],
+        };
+
+        let mut degree_map = std::collections::HashMap::new();
+        let mut max_degree = 0u32;
+
+        for term in &terms {
+            let (coef, deg) = Solver::get_term_coefficient_and_degree(term, var);
+            let coef_val = Self::expr_to_i64(&Simplifier::simplify(&coef))?;
+            *degree_map.entry(deg).or_insert(0i64) += coef_val;
+            if deg > max_degree {
+                max_degree = deg;
+            }
+        }
+
+        let mut coeffs = Vec::with_capacity(max_degree as usize + 1);
+        for d in (0..=max_degree).rev() {
+            coeffs.push(*degree_map.get(&d).unwrap_or(&0));
+        }
+        Some(coeffs)
+    }
+
+    fn expr_to_i64(expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Integer(n) => Some(*n),
+            Expr::Neg(inner) => Self::expr_to_i64(inner).map(|n| -n),
+            Expr::Float(f) if f.fract() == 0.0 && f.abs() < i64::MAX as f64 => Some(*f as i64),
+            _ => None,
+        }
+    }
+
+    /// Factor out GCD of all coefficients. Returns (gcd, normalized_coefficients).
+    fn factor_gcd_coefficient(coeffs: &[i64]) -> (i64, Vec<i64>) {
+        let g = coeffs
+            .iter()
+            .copied()
+            .filter(|&c| c != 0)
+            .fold(0i64, |acc, c| gcd(acc.unsigned_abs(), c.unsigned_abs()) as i64);
+        if g <= 1 {
+            return (1, coeffs.to_vec());
+        }
+        // If leading coefficient is negative, factor out -g to keep leading positive
+        let g = if coeffs[0] < 0 { -g } else { g };
+        let normed = coeffs.iter().map(|c| c / g).collect();
+        (g, normed)
+    }
+
+    fn wrap_gcd(gcd: i64, expr: Expr) -> Expr {
+        if gcd == 1 {
+            expr
+        } else {
+            Simplifier::simplify(&Expr::mul(vec![Expr::Integer(gcd), expr]))
+        }
+    }
+
+    /// Try a^2*x^2 - c where c > 0 → (a*x - sqrt(c))(a*x + sqrt(c))
+    fn try_difference_of_squares(a: i64, c: i64, var: &Symbol) -> Option<Expr> {
+        if c >= 0 {
+            return None; // need c < 0 for a*x^2 + c = a*x^2 - |c|
+        }
+        let neg_c = (-c) as f64;
+        let sqrt_c = neg_c.sqrt();
+        if (sqrt_c - sqrt_c.round()).abs() > 1e-12 {
+            return None;
+        }
+        let sqrt_c = sqrt_c.round() as i64;
+        let a_f = a as f64;
+        let sqrt_a = a_f.sqrt();
+        if (sqrt_a - sqrt_a.round()).abs() > 1e-12 {
+            return None;
+        }
+        let sqrt_a = sqrt_a.round() as i64;
+
+        let ax = if sqrt_a == 1 {
+            Expr::Symbol(var.clone())
+        } else {
+            Expr::mul(vec![Expr::Integer(sqrt_a), Expr::Symbol(var.clone())])
+        };
+        let c_expr = Expr::Integer(sqrt_c);
+
+        Some(Expr::mul(vec![
+            Expr::sub(ax.clone(), c_expr.clone()),
+            Expr::add(vec![ax, c_expr]),
+        ]))
+    }
+
+    /// Try perfect square: a*x^2 + b*x + c where b^2 = 4*a*c
+    fn try_perfect_square(a: i64, b: i64, c: i64, var: &Symbol) -> Option<Expr> {
+        if b * b != 4 * a * c {
+            return None;
+        }
+        let a_f = a as f64;
+        let sqrt_a = a_f.sqrt();
+        if (sqrt_a - sqrt_a.round()).abs() > 1e-12 {
+            return None;
+        }
+        let sqrt_a = sqrt_a.round() as i64;
+        let c_f = (c as f64).abs();
+        let sqrt_c = c_f.sqrt();
+        if (sqrt_c - sqrt_c.round()).abs() > 1e-12 {
+            return None;
+        }
+        let sqrt_c = sqrt_c.round() as i64;
+
+        let ax = if sqrt_a == 1 {
+            Expr::Symbol(var.clone())
+        } else {
+            Expr::mul(vec![Expr::Integer(sqrt_a), Expr::Symbol(var.clone())])
+        };
+
+        let inner = if b > 0 {
+            Expr::add(vec![ax, Expr::Integer(sqrt_c)])
+        } else {
+            Expr::sub(ax, Expr::Integer(sqrt_c))
+        };
+
+        Some(Expr::pow(inner, Expr::Integer(2)))
+    }
+
+    /// Factor quadratic ax^2 + bx + c with rational roots
+    fn factor_quadratic(a: i64, b: i64, c: i64, var: &Symbol) -> Option<Expr> {
+        let disc = b as i128 * b as i128 - 4 * a as i128 * c as i128;
+        if disc < 0 {
+            return None;
+        }
+        let sqrt_d = (disc as f64).sqrt();
+        if (sqrt_d - sqrt_d.round()).abs() > 1e-10 {
+            return None; // discriminant not a perfect square
+        }
+        let sqrt_d = sqrt_d.round() as i64;
+        let r1_num = -b + sqrt_d;
+        let r1_den = 2 * a;
+        let r2_num = -b - sqrt_d;
+        let r2_den = 2 * a;
+
+        // Build (den*x - num) factors which when multiplied give den^2*(x-r1)(x-r2)
+        // Instead: a * (x - r1)(x - r2) where r1 = r1_num/r1_den
+        let g1 = gcd(r1_num.unsigned_abs(), r1_den.unsigned_abs()) as i64;
+        let g2 = gcd(r2_num.unsigned_abs(), r2_den.unsigned_abs()) as i64;
+        let (n1, d1) = (r1_num / g1, r1_den / g1);
+        let (n2, d2) = (r2_num / g2, r2_den / g2);
+
+        // Factor as: (a / (d1*d2)) * (d1*x - n1) * (d2*x - n2)
+        let leading = a / (d1 * d2);
+
+        let f1 = if d1 == 1 {
+            Expr::sub(Expr::Symbol(var.clone()), Expr::Integer(n1))
+        } else {
+            Expr::sub(
+                Expr::mul(vec![Expr::Integer(d1), Expr::Symbol(var.clone())]),
+                Expr::Integer(n1),
+            )
+        };
+        let f2 = if d2 == 1 {
+            Expr::sub(Expr::Symbol(var.clone()), Expr::Integer(n2))
+        } else {
+            Expr::sub(
+                Expr::mul(vec![Expr::Integer(d2), Expr::Symbol(var.clone())]),
+                Expr::Integer(n2),
+            )
+        };
+
+        let mut result = vec![f1, f2];
+        if leading != 1 {
+            result.insert(0, Expr::Integer(leading));
+        }
+        Some(Simplifier::simplify(&Expr::mul(result)))
+    }
+
+    /// Try to find rational roots and factor by synthetic division
+    fn factor_by_rational_roots(coeffs: &[i64], var: &Symbol) -> Option<Expr> {
+        let n = coeffs.len();
+        if n < 3 {
+            return None;
+        }
+        let leading = coeffs[0];
+        let constant = coeffs[n - 1];
+        if leading == 0 || constant == 0 {
+            return None; // handled by trailing-zero extraction above
+        }
+
+        let p_divisors = divisors(constant.unsigned_abs());
+        let q_divisors = divisors(leading.unsigned_abs());
+
+        let mut found_root = None;
+        'outer: for &p in &p_divisors {
+            for &q in &q_divisors {
+                for sign in &[1i64, -1i64] {
+                    let num = *sign * p as i64;
+                    let den = q as i64;
+                    let num128 = num as i128;
+                    let den128 = den as i128;
+                    // P(p/q) * q^(n-1) = sum of c_i * p^(n-1-i) * q^i
+                    let mut check = 0i128;
+                    for (i, &c) in coeffs.iter().enumerate() {
+                        check += c as i128
+                            * num128.pow((n - 1 - i) as u32)
+                            * den128.pow(i as u32);
+                    }
+                    if check == 0 {
+                        found_root = Some((num, den));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        let (root_num, root_den) = found_root?;
+
+        // Synthetic division by (den*x - num)
+        let quotient = Self::synthetic_divide(coeffs, root_num, root_den)?;
+
+        // Build the linear factor (den*x - num), simplified
+        let g = gcd(root_num.unsigned_abs(), root_den.unsigned_abs()) as i64;
+        let (rn, rd) = (root_num / g, root_den / g);
+        let linear_factor = if rd == 1 {
+            Expr::sub(Expr::Symbol(var.clone()), Expr::Integer(rn))
+        } else {
+            Expr::sub(
+                Expr::mul(vec![Expr::Integer(rd), Expr::Symbol(var.clone())]),
+                Expr::Integer(rn),
+            )
+        };
+
+        let remaining = Self::coeffs_to_expr(&quotient, var);
+        let factored_remaining = Self::factor(&remaining, var);
+
+        Some(Expr::mul(vec![linear_factor, factored_remaining]))
+    }
+
+    /// Synthetic division of polynomial by (den*x - num)
+    /// Returns quotient coefficients, or None if division fails
+    fn synthetic_divide(coeffs: &[i64], root_num: i64, root_den: i64) -> Option<Vec<i64>> {
+        // Dividing by (den*x - num) = den*(x - num/den)
+        // Use scaled arithmetic: coefficients * den^k
+        let n = coeffs.len();
+        if n < 2 {
+            return None;
+        }
+
+        // Horner-style synthetic division for (x - num/den)
+        // Then adjust for the den factor
+        let mut quotient = Vec::with_capacity(n - 1);
+        let mut remainder = 0i128;
+
+        for (i, &c) in coeffs.iter().enumerate() {
+            let scaled = c as i128 * (root_den as i128).pow((n - 1 - i) as u32) + remainder;
+            if i < n - 1 {
+                // This should divide evenly by root_den^(n-2-i)
+                let divisor = (root_den as i128).pow((n - 2 - i) as u32);
+                if divisor != 0 && scaled % divisor == 0 {
+                    quotient.push((scaled / divisor) as i64);
+                } else {
+                    return None;
+                }
+                remainder = quotient.last().copied().unwrap_or(0) as i128 * root_num as i128;
+            }
+        }
+
+        Some(quotient)
+    }
+
+    /// Convert coefficient list [a_n, ..., a_0] to expression
+    fn coeffs_to_expr(coeffs: &[i64], var: &Symbol) -> Expr {
+        let degree = coeffs.len() - 1;
+        let mut terms = Vec::new();
+        for (i, &c) in coeffs.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            let d = degree - i;
+            let var_part = match d {
+                0 => Expr::Integer(1),
+                1 => Expr::Symbol(var.clone()),
+                _ => Expr::pow(Expr::Symbol(var.clone()), Expr::Integer(d as i64)),
+            };
+            if d == 0 {
+                terms.push(Expr::Integer(c));
+            } else if c == 1 {
+                terms.push(var_part);
+            } else if c == -1 {
+                terms.push(Expr::neg(var_part));
+            } else {
+                terms.push(Expr::mul(vec![Expr::Integer(c), var_part]));
+            }
+        }
+        if terms.is_empty() {
+            Expr::Integer(0)
+        } else if terms.len() == 1 {
+            terms.into_iter().next().unwrap()
+        } else {
+            Expr::Add(terms)
+        }
+    }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+fn divisors(n: u64) -> Vec<u64> {
+    if n == 0 {
+        return vec![1];
+    }
+    let mut result = Vec::new();
+    let mut i = 1;
+    while i * i <= n {
+        if n % i == 0 {
+            result.push(i);
+            if i != n / i {
+                result.push(n / i);
+            }
+        }
+        i += 1;
+    }
+    result.sort();
+    result
 }
 
 #[cfg(test)]
