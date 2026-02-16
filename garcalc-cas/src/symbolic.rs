@@ -1607,7 +1607,11 @@ impl Simplifier {
         }
 
         // Collect like terms (simplified version)
-        let result_terms = Self::collect_like_terms(non_numeric);
+        let mut result_terms = Self::collect_like_terms(non_numeric);
+
+        // Apply trig identities: sin^2 + cos^2 = 1, etc.
+        Self::try_pythagorean_identity(&mut result_terms);
+        Self::try_pythagorean_complement(&mut result_terms);
 
         let mut final_terms = result_terms;
         if has_numeric && numeric_sum != 0.0 {
@@ -1752,6 +1756,9 @@ impl Simplifier {
             }
         }
 
+        // Cancel common symbolic factors (x^3 / x^2 -> x)
+        Self::cancel_common_factors(&mut non_numeric);
+
         // Simplify the numeric part
         let mut final_factors = non_numeric;
 
@@ -1782,7 +1789,256 @@ impl Simplifier {
         } else if final_factors.len() == 1 {
             final_factors.into_iter().next().unwrap()
         } else {
+            // Try double-angle: 2*sin(x)*cos(x) -> sin(2x)
+            if let Some(result) = Self::try_double_angle(&final_factors) {
+                return result;
+            }
             Expr::Mul(final_factors)
+        }
+    }
+
+    /// Apply Pythagorean trig identities to a list of additive terms (mutated in place).
+    /// sin(A)^2 + cos(A)^2 → 1, with coefficient matching.
+    fn try_pythagorean_identity(terms: &mut Vec<Expr>) -> bool {
+        // Find pairs of sin(A)^2 and cos(A)^2 with matching coefficients
+        let mut changed = false;
+        'outer: loop {
+            for i in 0..terms.len() {
+                let (coef_i, func_i, arg_i) = match Self::extract_trig_squared(&terms[i]) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                for j in (i + 1)..terms.len() {
+                    let (coef_j, func_j, arg_j) = match Self::extract_trig_squared(&terms[j]) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    // Need sin^2 + cos^2 (or cos^2 + sin^2) with same arg and coefficient
+                    if arg_i.to_string() == arg_j.to_string()
+                        && (coef_i - coef_j).abs() < 1e-12
+                        && ((func_i == "sin" && func_j == "cos")
+                            || (func_i == "cos" && func_j == "sin"))
+                    {
+                        terms.remove(j);
+                        terms.remove(i);
+                        if (coef_i - 1.0).abs() < 1e-12 {
+                            terms.push(Expr::Integer(1));
+                        } else if coef_i.fract() == 0.0 {
+                            terms.push(Expr::Integer(coef_i as i64));
+                        } else {
+                            terms.push(Expr::Float(coef_i));
+                        }
+                        changed = true;
+                        continue 'outer;
+                    }
+                }
+            }
+            break;
+        }
+        changed
+    }
+
+    /// Apply 1 - sin^2(x) → cos^2(x) and 1 - cos^2(x) → sin^2(x)
+    fn try_pythagorean_complement(terms: &mut Vec<Expr>) -> bool {
+        let mut changed = false;
+        'outer: loop {
+            // Find a numeric constant and a negated trig squared
+            let mut const_idx = None;
+            let mut const_val = 0.0;
+            for (i, t) in terms.iter().enumerate() {
+                match t {
+                    Expr::Integer(n) => {
+                        const_idx = Some(i);
+                        const_val = *n as f64;
+                    }
+                    Expr::Float(f) => {
+                        const_idx = Some(i);
+                        const_val = *f;
+                    }
+                    _ => {}
+                }
+            }
+            let ci = match const_idx {
+                Some(i) if const_val != 0.0 => i,
+                _ => break,
+            };
+
+            for j in 0..terms.len() {
+                if j == ci {
+                    continue;
+                }
+                // Check for -coef * sin^2(A) or -coef * cos^2(A)
+                let (coef, func_name, arg) = match Self::extract_trig_squared(&terms[j]) {
+                    Some((c, f, a)) if c < 0.0 => (c, f, a),
+                    _ => continue,
+                };
+                let neg_coef = -coef; // positive version of the coefficient
+                if (neg_coef - const_val).abs() < 1e-12 {
+                    let complement = if func_name == "sin" { "cos" } else { "sin" };
+                    terms.remove(j.max(ci));
+                    terms.remove(j.min(ci));
+                    let replacement = if (neg_coef - 1.0).abs() < 1e-12 {
+                        Expr::pow(
+                            Expr::func(complement, vec![arg]),
+                            Expr::Integer(2),
+                        )
+                    } else {
+                        Expr::mul(vec![
+                            if neg_coef.fract() == 0.0 {
+                                Expr::Integer(neg_coef as i64)
+                            } else {
+                                Expr::Float(neg_coef)
+                            },
+                            Expr::pow(
+                                Expr::func(complement, vec![arg]),
+                                Expr::Integer(2),
+                            ),
+                        ])
+                    };
+                    terms.push(replacement);
+                    changed = true;
+                    continue 'outer;
+                }
+            }
+            break;
+        }
+        changed
+    }
+
+    /// Extract (coefficient, "sin"|"cos", argument) from a term like coef*sin(A)^2
+    fn extract_trig_squared(expr: &Expr) -> Option<(f64, &'static str, Expr)> {
+        let (coef, base) = Self::extract_coefficient(expr);
+        match &base {
+            Expr::Pow(inner, exp) if **exp == Expr::Integer(2) => {
+                if let Expr::Func(name, args) = &**inner {
+                    if args.len() == 1 {
+                        let func_name = match name.as_str() {
+                            "sin" => "sin",
+                            "cos" => "cos",
+                            _ => return None,
+                        };
+                        return Some((coef, func_name, args[0].clone()));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Detect 2*sin(x)*cos(x) → sin(2*x) in a Mul node
+    fn try_double_angle(factors: &[Expr]) -> Option<Expr> {
+        if factors.len() < 2 {
+            return None;
+        }
+        let (overall_coef, non_numeric): (f64, Vec<&Expr>) = {
+            let mut c = 1.0;
+            let mut rest = Vec::new();
+            for f in factors {
+                match f {
+                    Expr::Integer(n) => c *= *n as f64,
+                    Expr::Float(x) => c *= x,
+                    other => rest.push(other),
+                }
+            }
+            (c, rest)
+        };
+
+        if non_numeric.len() != 2 {
+            return None;
+        }
+        // Need sin(A) and cos(A)
+        let (sin_arg, cos_arg) = match (non_numeric[0], non_numeric[1]) {
+            (Expr::Func(n1, a1), Expr::Func(n2, a2))
+                if n1 == "sin" && n2 == "cos" && a1.len() == 1 && a2.len() == 1 =>
+            {
+                (&a1[0], &a2[0])
+            }
+            (Expr::Func(n1, a1), Expr::Func(n2, a2))
+                if n1 == "cos" && n2 == "sin" && a1.len() == 1 && a2.len() == 1 =>
+            {
+                (&a2[0], &a1[0])
+            }
+            _ => return None,
+        };
+
+        if sin_arg.to_string() != cos_arg.to_string() {
+            return None;
+        }
+
+        // 2*sin(A)*cos(A) = sin(2A)
+        // overall_coef * sin(A)*cos(A) = (overall_coef/2) * sin(2A)
+        let remaining_coef = overall_coef / 2.0;
+        let double_arg = Simplifier::simplify(&Expr::mul(vec![Expr::Integer(2), sin_arg.clone()]));
+        let sin_2a = Expr::func("sin", vec![double_arg]);
+
+        if (remaining_coef - 1.0).abs() < 1e-12 {
+            Some(sin_2a)
+        } else if remaining_coef.fract() == 0.0 {
+            Some(Expr::mul(vec![Expr::Integer(remaining_coef as i64), sin_2a]))
+        } else {
+            Some(Expr::mul(vec![Expr::Float(remaining_coef), sin_2a]))
+        }
+    }
+
+    /// Cancel common base^exp factors in a Mul node's factor list.
+    /// E.g. x^3 * x^(-2) → x, a * b * a^(-1) → b
+    fn cancel_common_factors(factors: &mut Vec<Expr>) {
+        // Extract (base, exponent) for each factor
+        fn base_exp(e: &Expr) -> (Expr, f64) {
+            match e {
+                Expr::Pow(base, exp) => {
+                    if let Expr::Integer(n) = &**exp {
+                        return ((**base).clone(), *n as f64);
+                    }
+                    if let Expr::Neg(inner) = &**exp {
+                        if let Expr::Integer(n) = &**inner {
+                            return ((**base).clone(), -(*n as f64));
+                        }
+                    }
+                    (e.clone(), 1.0)
+                }
+                _ => (e.clone(), 1.0),
+            }
+        }
+
+        // Group by base string representation
+        use std::collections::HashMap;
+        let mut base_map: HashMap<String, (Expr, f64)> = HashMap::new();
+        let mut order = Vec::new();
+
+        for f in factors.iter() {
+            let (base, exp) = base_exp(f);
+            let key = base.to_string();
+            if let Some((_, existing_exp)) = base_map.get_mut(&key) {
+                *existing_exp += exp;
+            } else {
+                order.push(key.clone());
+                base_map.insert(key, (base, exp));
+            }
+        }
+
+        // Check if anything actually cancelled
+        if order.len() == factors.len() {
+            return; // No duplicates found
+        }
+
+        factors.clear();
+        for key in order {
+            if let Some((base, exp)) = base_map.remove(&key) {
+                if exp == 0.0 {
+                    // Cancelled completely
+                    continue;
+                } else if exp == 1.0 {
+                    factors.push(base);
+                } else if exp == -1.0 {
+                    factors.push(Expr::pow(base, Expr::Integer(-1)));
+                } else if exp.fract() == 0.0 {
+                    factors.push(Expr::pow(base, Expr::Integer(exp as i64)));
+                } else {
+                    factors.push(Expr::pow(base, Expr::Float(exp)));
+                }
+            }
         }
     }
 
