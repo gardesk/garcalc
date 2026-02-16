@@ -3,7 +3,7 @@
 use anyhow::Result;
 use garcalc_cas::expr::{Expr, Symbol};
 use garcalc_cas::parser;
-use garcalc_graph::{Graph2D, Graph3D};
+use garcalc_graph::{Graph2D, Graph3D, ViewportPreset, COLOR_PALETTE};
 use garcalc_ipc::Mode;
 use garcalc_math::{from_expr, MathBox, MathInput, MathLayoutEngine, MathRenderer};
 use gartk_core::{Color, Point, Rect, Theme};
@@ -119,15 +119,49 @@ impl CalculatorUI {
         graph3d: &Graph3D,
         show_help_modal: bool,
         calc_buttons_extended: bool,
+        show_function_list: bool,
+        zeros_visible: bool,
+        cached_zeros: &[(usize, Vec<(f64, f64)>)],
+        cached_intersections: &[((usize, usize), Vec<(f64, f64)>)],
+        table_visible: bool,
+        table_scroll_offset: usize,
+        table_step: f64,
+        table_data: &[(f64, Option<f64>)],
+        viewport_panel_open: bool,
+        viewport_edit_field: usize,
+        viewport_edit_buffer: &str,
+        color_picker_open: bool,
+        color_picker_func_index: usize,
+        settings3d_panel_open: bool,
+        auto_rotate: bool,
     ) -> Result<()> {
         let size = self.renderer.size();
 
         if mode == Mode::Graph {
             // Graph mode: render 2D graph with overlay input
-            self.render_graph_mode(input, cursor, cursor_visible, history, graph)?;
+            self.render_graph_mode(
+                input,
+                cursor,
+                cursor_visible,
+                history,
+                graph,
+                show_function_list,
+                zeros_visible,
+                cached_zeros,
+                cached_intersections,
+                table_visible,
+                table_scroll_offset,
+                table_step,
+                table_data,
+                viewport_panel_open,
+                viewport_edit_field,
+                viewport_edit_buffer,
+                color_picker_open,
+                color_picker_func_index,
+            )?;
         } else if mode == Mode::Graph3D {
             // Graph3D mode: render 3D surface with overlay input
-            self.render_graph3d_mode(input, cursor, cursor_visible, history, graph3d)?;
+            self.render_graph3d_mode(input, cursor, cursor_visible, history, graph3d, settings3d_panel_open, auto_rotate)?;
         } else {
             // Calculator mode: standard layout
             // Clear background with darker color
@@ -222,6 +256,19 @@ impl CalculatorUI {
         cursor_visible: bool,
         history: &[HistoryEntry],
         graph: &Graph2D,
+        show_function_list: bool,
+        zeros_visible: bool,
+        cached_zeros: &[(usize, Vec<(f64, f64)>)],
+        cached_intersections: &[((usize, usize), Vec<(f64, f64)>)],
+        table_visible: bool,
+        table_scroll_offset: usize,
+        table_step: f64,
+        table_data: &[(f64, Option<f64>)],
+        viewport_panel_open: bool,
+        viewport_edit_field: usize,
+        viewport_edit_buffer: &str,
+        color_picker_open: bool,
+        color_picker_func_index: usize,
     ) -> Result<()> {
         let size = self.renderer.size();
         let width = size.width;
@@ -232,6 +279,18 @@ impl CalculatorUI {
 
         // Render the graph (fills entire area)
         graph.render(&ctx, width, height);
+
+        // Draw zeros/intersection markers on the graph surface
+        if zeros_visible {
+            let zero_color = garcalc_graph::Color { r: 255, g: 80, b: 80, a: 255 };
+            let isect_color = garcalc_graph::Color { r: 80, g: 255, b: 80, a: 255 };
+            for (_idx, pts) in cached_zeros {
+                graph.draw_markers(&ctx, pts, zero_color, width, height);
+            }
+            for (_pair, pts) in cached_intersections {
+                graph.draw_markers(&ctx, pts, isect_color, width, height);
+            }
+        }
 
         // Mode indicator (overlay)
         self.draw_mode_indicator(Mode::Graph)?;
@@ -290,13 +349,33 @@ impl CalculatorUI {
                 .text(&func_text, (width - 80) as f64, 12.0, &func_style)?;
         }
 
+        // Function list overlay
+        if show_function_list {
+            self.draw_function_list(graph)?;
+        }
+
+        // Table view overlay
+        if table_visible {
+            self.draw_table_view(table_data, table_scroll_offset, table_step)?;
+        }
+
+        // Viewport settings panel
+        if viewport_panel_open {
+            self.draw_viewport_panel(graph, viewport_edit_field, viewport_edit_buffer)?;
+        }
+
+        // Color picker popup
+        if color_picker_open {
+            self.draw_color_picker(graph, color_picker_func_index)?;
+        }
+
         // Help text
         let help_style = TextStyle::new()
             .font_family(&self.theme.font_family)
             .font_size(10.0)
             .color(self.theme.foreground.with_alpha(0.5));
         self.renderer.text(
-            "Scroll: zoom | Drag: pan | Right-click: trace | Ctrl+R: reset",
+            "Scroll: zoom | Drag: pan | Ctrl+W: viewport | Ctrl+K: color | Ctrl+L: funcs",
             90.0,
             12.0,
             &help_style,
@@ -312,6 +391,8 @@ impl CalculatorUI {
         cursor_visible: bool,
         history: &[HistoryEntry],
         graph3d: &Graph3D,
+        settings3d_panel_open: bool,
+        auto_rotate: bool,
     ) -> Result<()> {
         let size = self.renderer.size();
         let width = size.width;
@@ -380,13 +461,18 @@ impl CalculatorUI {
                 .text(&func_text, (width - 80) as f64, 12.0, &func_style)?;
         }
 
+        // 3D settings panel
+        if settings3d_panel_open {
+            self.draw_3d_settings_panel(graph3d, auto_rotate)?;
+        }
+
         // Help text
         let help_style = TextStyle::new()
             .font_family(&self.theme.font_family)
             .font_size(10.0)
             .color(self.theme.foreground.with_alpha(0.5));
         self.renderer.text(
-            "Scroll: zoom | Drag: rotate | Ctrl+R: reset",
+            "Drag: rotate | Ctrl+M: mode | Ctrl+A: spin | Ctrl+G: grid | Ctrl+S: settings",
             55.0,
             12.0,
             &help_style,
@@ -1138,9 +1224,9 @@ impl CalculatorUI {
             &mut right_y,
             "Graph Mode",
             &[
-                "Enter y=... (or expression) to add a curve.",
-                "Left-drag pans, mouse wheel zooms.",
-                "Right-click toggles trace cursor.",
+                "Enter y=... or r=... (polar) to add a curve.",
+                "Ctrl+W: viewport panel, Ctrl+K: color picker.",
+                "Ctrl+L: func list, Ctrl+Z: zeros, F4: table.",
                 "Ctrl+R reset view, Ctrl+C clear, Ctrl+T trace.",
             ],
             &heading_style,
@@ -1153,10 +1239,11 @@ impl CalculatorUI {
             &mut right_y,
             "3D Mode",
             &[
-                "Enter z=... (or expression) to add a surface.",
-                "Left-drag rotates camera, mouse wheel zooms.",
-                "Ctrl+R reset camera, Ctrl+C clear surfaces.",
-                "Parametric surface: (x(u,v), y(u,v), z(u,v)).",
+                "Enter z=... or expression to add a surface.",
+                "sphere: expr | cyl: expr | level: expr = c",
+                "Ctrl+M: render mode, Ctrl+A: auto-rotate.",
+                "Ctrl+1/3/5/7: preset views, Ctrl+G: grid.",
+                "Ctrl+S: settings panel, Ctrl+R: reset camera.",
             ],
             &heading_style,
             &body_style,
@@ -1499,6 +1586,505 @@ impl CalculatorUI {
             let cmd_y = y as f64 + input_height as f64 - 10.0;
             self.renderer.text(&cmd_text, cmd_x, cmd_y, &cmd_style)?;
         }
+
+        Ok(())
+    }
+
+    fn draw_function_list(&mut self, graph: &Graph2D) -> Result<()> {
+        let size = self.renderer.size();
+        let panel_w = 200u32;
+        let row_h = 22i32;
+        let count = graph.functions.len();
+        let panel_h = (count as u32 * row_h as u32 + 10).max(30);
+        let px = size.width as i32 - panel_w as i32 - 10;
+        let py = 36;
+
+        // Background
+        let bg = Rect::new(px, py, panel_w, panel_h);
+        self.renderer
+            .fill_rounded_rect(bg, 6.0, self.theme.background.with_alpha(0.88))?;
+
+        let label_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground);
+
+        let dim_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground.with_alpha(0.4));
+
+        for (i, pf) in graph.functions.iter().enumerate() {
+            let y = py + 6 + (i as i32 * row_h);
+            let graph_color = pf.func.color().unwrap_or(garcalc_graph::Color::BLACK);
+            let swatch_color =
+                Color::from_u8(graph_color.r, graph_color.g, graph_color.b, graph_color.a);
+            let swatch = Rect::new(px + 8, y + 2, 12, 12);
+            self.renderer.fill_rect(swatch, swatch_color)?;
+
+            let style = if pf.visible { &label_style } else { &dim_style };
+            let prefix = format!("{}. ", i + 1);
+            let label = format!("{}{}", prefix, pf.label);
+            self.renderer
+                .text(&label, (px + 26) as f64, y as f64, style)?;
+        }
+
+        Ok(())
+    }
+
+    fn draw_table_view(
+        &mut self,
+        table_data: &[(f64, Option<f64>)],
+        scroll_offset: usize,
+        step: f64,
+    ) -> Result<()> {
+        let size = self.renderer.size();
+        let panel_w = 180u32;
+        let row_h = 18i32;
+        let max_rows = 20usize;
+        let header_h = 24i32;
+        let panel_h = header_h as u32 + (max_rows as u32 * row_h as u32) + 8;
+        let px = size.width as i32 - panel_w as i32 - 10;
+        let py = 36;
+
+        // Background
+        let bg = Rect::new(px, py, panel_w, panel_h);
+        self.renderer
+            .fill_rounded_rect(bg, 6.0, self.theme.background.with_alpha(0.92))?;
+
+        // Header
+        let header_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.selection_foreground);
+        self.renderer.text(
+            &format!("x (step={:.3})", step),
+            (px + 8) as f64,
+            (py + 4) as f64,
+            &header_style,
+        )?;
+        self.renderer.text(
+            "f(x)",
+            (px + panel_w as i32 / 2 + 8) as f64,
+            (py + 4) as f64,
+            &header_style,
+        )?;
+
+        // Divider
+        let div = Rect::new(px + 4, py + header_h - 2, panel_w - 8, 1);
+        self.renderer
+            .fill_rect(div, self.theme.border.with_alpha(0.5))?;
+
+        // Rows
+        let val_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.9));
+        let undef_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.4));
+
+        let visible_rows = table_data.iter().skip(scroll_offset).take(max_rows);
+        for (i, (x, y)) in visible_rows.enumerate() {
+            let ry = py + header_h + (i as i32 * row_h);
+            self.renderer.text(
+                &format!("{:.4}", x),
+                (px + 8) as f64,
+                ry as f64,
+                &val_style,
+            )?;
+            match y {
+                Some(yv) => {
+                    self.renderer.text(
+                        &format!("{:.4}", yv),
+                        (px + panel_w as i32 / 2 + 8) as f64,
+                        ry as f64,
+                        &val_style,
+                    )?;
+                }
+                None => {
+                    self.renderer.text(
+                        "undef",
+                        (px + panel_w as i32 / 2 + 8) as f64,
+                        ry as f64,
+                        &undef_style,
+                    )?;
+                }
+            }
+        }
+
+        // Scroll indicators
+        let hint_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(9.0)
+            .color(self.theme.foreground.with_alpha(0.5));
+        let bottom_y = py as f64 + panel_h as f64 - 14.0;
+        self.renderer.text(
+            "Up/Dn scroll | [/] step | Ctrl+E export",
+            (px + 6) as f64,
+            bottom_y,
+            &hint_style,
+        )?;
+
+        Ok(())
+    }
+
+    // --- Viewport settings panel (#16) ---
+
+    fn viewport_panel_rect(&self) -> Rect {
+        Rect::new(10, 40, 200, 160)
+    }
+
+    fn draw_viewport_panel(
+        &mut self,
+        graph: &Graph2D,
+        edit_field: usize,
+        edit_buffer: &str,
+    ) -> Result<()> {
+        let panel = self.viewport_panel_rect();
+        self.renderer
+            .fill_rounded_rect(panel, 8.0, self.theme.background.with_alpha(0.92))?;
+        self.renderer
+            .stroke_rounded_rect(panel, 8.0, self.theme.border.with_alpha(0.8), 1.0)?;
+
+        let heading_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.selection_foreground);
+        let val_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground.with_alpha(0.9));
+        let active_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.selection_foreground);
+
+        self.renderer.text(
+            "Viewport Settings",
+            (panel.x + 10) as f64,
+            (panel.y + 6) as f64,
+            &heading_style,
+        )?;
+
+        let labels = ["X min:", "X max:", "Y min:", "Y max:"];
+        let values = [
+            graph.viewport.x_min,
+            graph.viewport.x_max,
+            graph.viewport.y_min,
+            graph.viewport.y_max,
+        ];
+
+        for (i, (label, val)) in labels.iter().zip(values.iter()).enumerate() {
+            let y = panel.y + 26 + i as i32 * 22;
+            self.renderer
+                .text(label, (panel.x + 10) as f64, y as f64, &val_style)?;
+
+            if i == edit_field {
+                let field_rect = Rect::new(panel.x + 70, y - 2, 118, 18);
+                self.renderer.fill_rounded_rect(
+                    field_rect,
+                    3.0,
+                    self.theme.selection_background.with_alpha(0.4),
+                )?;
+                self.renderer.text(
+                    edit_buffer,
+                    (panel.x + 74) as f64,
+                    y as f64,
+                    &active_style,
+                )?;
+            } else {
+                self.renderer.text(
+                    &format!("{:.4}", val),
+                    (panel.x + 74) as f64,
+                    y as f64,
+                    &val_style,
+                )?;
+            }
+        }
+
+        // Preset buttons
+        let btn_y = panel.y + 118;
+        let btn_labels = ["Standard", "Trig", "Fit"];
+        let btn_w = 56i32;
+        let btn_gap = 6i32;
+        for (i, label) in btn_labels.iter().enumerate() {
+            let bx = panel.x + 10 + i as i32 * (btn_w + btn_gap);
+            let btn = Rect::new(bx, btn_y, btn_w as u32, 22);
+            self.renderer.fill_rounded_rect(
+                btn,
+                4.0,
+                self.theme.item_hover_background.with_alpha(0.85),
+            )?;
+            self.renderer.stroke_rounded_rect(
+                btn,
+                4.0,
+                self.theme.border.with_alpha(0.7),
+                1.0,
+            )?;
+            let text_size = self.renderer.measure_text(label, &val_style)?;
+            self.renderer.text(
+                label,
+                bx as f64 + (btn_w as f64 - text_size.width as f64) * 0.5,
+                btn_y as f64 + 3.0,
+                &val_style,
+            )?;
+        }
+
+        // Hint
+        let hint_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(9.0)
+            .color(self.theme.foreground.with_alpha(0.5));
+        self.renderer.text(
+            "Tab: next | Enter: apply | Esc: close",
+            (panel.x + 10) as f64,
+            (panel.y + 146) as f64,
+            &hint_style,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn viewport_preset_hit(&self, x: f64, y: f64) -> Option<ViewportPreset> {
+        let panel = self.viewport_panel_rect();
+        let btn_y = panel.y + 118;
+        let btn_w = 56i32;
+        let btn_gap = 6i32;
+        let presets = [ViewportPreset::Standard, ViewportPreset::Trig, ViewportPreset::ZoomFit];
+
+        for (i, preset) in presets.iter().enumerate() {
+            let bx = panel.x + 10 + i as i32 * (btn_w + btn_gap);
+            let btn = Rect::new(bx, btn_y, btn_w as u32, 22);
+            if btn.contains_point(Point::new(x as i32, y as i32)) {
+                return Some(*preset);
+            }
+        }
+        None
+    }
+
+    // --- Color picker (#17) ---
+
+    fn color_picker_rect(&self) -> Rect {
+        let size = self.renderer.size();
+        // Position near top-right, below function list area
+        let px = size.width as i32 - 130;
+        Rect::new(px, 40, 120, 90)
+    }
+
+    fn draw_color_picker(
+        &mut self,
+        graph: &Graph2D,
+        func_index: usize,
+    ) -> Result<()> {
+        let panel = self.color_picker_rect();
+        self.renderer
+            .fill_rounded_rect(panel, 8.0, self.theme.background.with_alpha(0.92))?;
+        self.renderer
+            .stroke_rounded_rect(panel, 8.0, self.theme.border.with_alpha(0.8), 1.0)?;
+
+        let heading_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.8));
+        self.renderer.text(
+            &format!("Color: func {}", func_index + 1),
+            (panel.x + 8) as f64,
+            (panel.y + 4) as f64,
+            &heading_style,
+        )?;
+
+        let current_color = graph
+            .functions
+            .get(func_index)
+            .and_then(|pf| pf.func.color());
+
+        let swatch_size = 20i32;
+        let gap = 4i32;
+        let cols = 4;
+        for (i, palette_color) in COLOR_PALETTE.iter().enumerate() {
+            let col = (i % cols) as i32;
+            let row = (i / cols) as i32;
+            let sx = panel.x + 10 + col * (swatch_size + gap);
+            let sy = panel.y + 22 + row * (swatch_size + gap);
+            let swatch = Rect::new(sx, sy, swatch_size as u32, swatch_size as u32);
+
+            let c = Color::from_u8(palette_color.r, palette_color.g, palette_color.b, palette_color.a);
+            self.renderer.fill_rounded_rect(swatch, 3.0, c)?;
+
+            // White border on current color
+            if let Some(cur) = current_color {
+                if cur.r == palette_color.r && cur.g == palette_color.g && cur.b == palette_color.b {
+                    self.renderer.stroke_rounded_rect(
+                        swatch,
+                        3.0,
+                        Color::rgb(1.0, 1.0, 1.0),
+                        2.0,
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn color_picker_hit(&self, x: f64, y: f64) -> Option<usize> {
+        let panel = self.color_picker_rect();
+        let swatch_size = 20i32;
+        let gap = 4i32;
+        let cols = 4;
+
+        for i in 0..COLOR_PALETTE.len() {
+            let col = (i % cols) as i32;
+            let row = (i / cols) as i32;
+            let sx = panel.x + 10 + col * (swatch_size + gap);
+            let sy = panel.y + 22 + row * (swatch_size + gap);
+            let swatch = Rect::new(sx, sy, swatch_size as u32, swatch_size as u32);
+            if swatch.contains_point(Point::new(x as i32, y as i32)) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    // --- 3D settings panel (#23) ---
+
+    fn draw_3d_settings_panel(
+        &mut self,
+        graph3d: &Graph3D,
+        auto_rotate: bool,
+    ) -> Result<()> {
+        let size = self.renderer.size();
+        let panel_w = 220u32;
+        let panel_h = 240u32;
+        let px = size.width as i32 - panel_w as i32 - 10;
+        let py = 36;
+        let panel = Rect::new(px, py, panel_w, panel_h);
+
+        self.renderer
+            .fill_rounded_rect(panel, 8.0, self.theme.background.with_alpha(0.92))?;
+        self.renderer
+            .stroke_rounded_rect(panel, 8.0, self.theme.border.with_alpha(0.8), 1.0)?;
+
+        let heading_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.selection_foreground);
+        let val_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(11.0)
+            .color(self.theme.foreground.with_alpha(0.9));
+        let label_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(10.0)
+            .color(self.theme.foreground.with_alpha(0.7));
+
+        self.renderer.text(
+            "3D Settings",
+            (px + 10) as f64,
+            (py + 6) as f64,
+            &heading_style,
+        )?;
+
+        let mut y = py + 28;
+        let lx = (px + 10) as f64;
+        let vx = (px + 90) as f64;
+
+        // Domain
+        self.renderer.text("Domain:", lx, y as f64, &label_style)?;
+        y += 16;
+        self.renderer.text(
+            &format!("X: [{:.1}, {:.1}]", graph3d.viewport.x_min, graph3d.viewport.x_max),
+            lx + 8.0,
+            y as f64,
+            &val_style,
+        )?;
+        y += 16;
+        self.renderer.text(
+            &format!("Y: [{:.1}, {:.1}]", graph3d.viewport.y_min, graph3d.viewport.y_max),
+            lx + 8.0,
+            y as f64,
+            &val_style,
+        )?;
+        y += 16;
+        self.renderer.text(
+            &format!("Z: [{:.1}, {:.1}]", graph3d.viewport.z_min, graph3d.viewport.z_max),
+            lx + 8.0,
+            y as f64,
+            &val_style,
+        )?;
+        y += 20;
+
+        // Grid
+        self.renderer.text("Grid:", lx, y as f64, &label_style)?;
+        self.renderer.text(
+            &format!("{}", graph3d.config.grid_lines),
+            vx,
+            y as f64,
+            &val_style,
+        )?;
+        y += 18;
+
+        // Colormap
+        self.renderer.text("Colormap:", lx, y as f64, &label_style)?;
+        self.renderer.text(
+            graph3d.config.colormap.name(),
+            vx,
+            y as f64,
+            &val_style,
+        )?;
+        y += 18;
+
+        // Render mode
+        self.renderer.text("Render:", lx, y as f64, &label_style)?;
+        self.renderer.text(
+            graph3d.config.render_mode.name(),
+            vx,
+            y as f64,
+            &val_style,
+        )?;
+        y += 18;
+
+        // Alpha
+        self.renderer.text("Alpha:", lx, y as f64, &label_style)?;
+        self.renderer.text(
+            &format!("{:.2}", graph3d.config.surface_alpha),
+            vx,
+            y as f64,
+            &val_style,
+        )?;
+        y += 18;
+
+        // View angles
+        let az_deg = graph3d.camera.azimuth.to_degrees();
+        let el_deg = graph3d.camera.elevation.to_degrees();
+        self.renderer.text("View:", lx, y as f64, &label_style)?;
+        self.renderer.text(
+            &format!("az={:.0} el={:.0}", az_deg, el_deg),
+            vx,
+            y as f64,
+            &val_style,
+        )?;
+        y += 18;
+
+        // Auto-rotate status
+        let rotate_text = if auto_rotate { "ON" } else { "OFF" };
+        self.renderer.text("Rotate:", lx, y as f64, &label_style)?;
+        self.renderer.text(rotate_text, vx, y as f64, &val_style)?;
+        y += 16;
+
+        // Hints
+        let hint_style = TextStyle::new()
+            .font_family(&self.theme.font_family)
+            .font_size(9.0)
+            .color(self.theme.foreground.with_alpha(0.5));
+        self.renderer.text(
+            "[/]: grid | </>: alpha | c: cmap | m: mode",
+            (px + 6) as f64,
+            y as f64,
+            &hint_style,
+        )?;
 
         Ok(())
     }
