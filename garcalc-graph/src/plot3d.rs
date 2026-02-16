@@ -36,7 +36,38 @@ impl Default for Camera3D {
     }
 }
 
+/// Camera preset positions
+#[derive(Debug, Clone, Copy)]
+pub enum CameraPreset {
+    Front,
+    Side,
+    Top,
+    Isometric,
+}
+
 impl Camera3D {
+    /// Apply a camera preset
+    pub fn apply_preset(&mut self, preset: CameraPreset) {
+        match preset {
+            CameraPreset::Front => {
+                self.azimuth = 0.0;
+                self.elevation = 0.0;
+            }
+            CameraPreset::Side => {
+                self.azimuth = std::f64::consts::FRAC_PI_2;
+                self.elevation = 0.0;
+            }
+            CameraPreset::Top => {
+                self.azimuth = 0.0;
+                self.elevation = 89.0_f64.to_radians();
+            }
+            CameraPreset::Isometric => {
+                self.azimuth = 45.0_f64.to_radians();
+                self.elevation = 30.0_f64.to_radians();
+            }
+        }
+    }
+
     /// Rotate the camera by delta angles
     pub fn rotate(&mut self, d_azimuth: f64, d_elevation: f64) {
         self.azimuth += d_azimuth;
@@ -116,6 +147,26 @@ impl Colormap {
             }
         }
     }
+
+    /// Cycle to the next colormap
+    pub fn next(self) -> Self {
+        match self {
+            Colormap::Viridis => Colormap::Plasma,
+            Colormap::Plasma => Colormap::Coolwarm,
+            Colormap::Coolwarm => Colormap::Grayscale,
+            Colormap::Grayscale => Colormap::Viridis,
+        }
+    }
+
+    /// Display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            Colormap::Viridis => "Viridis",
+            Colormap::Plasma => "Plasma",
+            Colormap::Coolwarm => "Coolwarm",
+            Colormap::Grayscale => "Grayscale",
+        }
+    }
 }
 
 /// A 3D plottable surface
@@ -137,6 +188,30 @@ pub enum Surface3D {
         u_range: (f64, f64),
         v_range: (f64, f64),
     },
+    /// Spherical: r = f(theta, phi)
+    Spherical {
+        expr: Expr,
+        theta_var: String,
+        phi_var: String,
+        theta_range: (f64, f64),
+        phi_range: (f64, f64),
+    },
+    /// Cylindrical: r = f(theta, z)
+    Cylindrical {
+        expr: Expr,
+        theta_var: String,
+        z_var: String,
+        theta_range: (f64, f64),
+        z_range: (f64, f64),
+    },
+    /// Level surface: f(x,y,z) = c, rendered as z-plane contour slices
+    LevelSurface {
+        expr: Expr,
+        x_var: String,
+        y_var: String,
+        z_var: String,
+        level: f64,
+    },
 }
 
 /// Render mode for surfaces
@@ -145,6 +220,26 @@ pub enum RenderMode {
     Wireframe,
     Filled,
     FilledWithWireframe,
+}
+
+impl RenderMode {
+    /// Cycle to the next render mode
+    pub fn next(self) -> Self {
+        match self {
+            RenderMode::FilledWithWireframe => RenderMode::Filled,
+            RenderMode::Filled => RenderMode::Wireframe,
+            RenderMode::Wireframe => RenderMode::FilledWithWireframe,
+        }
+    }
+
+    /// Display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            RenderMode::Wireframe => "Wireframe",
+            RenderMode::Filled => "Filled",
+            RenderMode::FilledWithWireframe => "FilledWire",
+        }
+    }
 }
 
 /// Configuration for 3D plot appearance
@@ -158,6 +253,10 @@ pub struct Plot3DConfig {
     pub grid_lines: usize,
     pub show_axes: bool,
     pub show_labels: bool,
+    /// Surface transparency (0.0 = fully transparent, 1.0 = fully opaque)
+    pub surface_alpha: f64,
+    /// Whether to show coordinate plane grids
+    pub show_coord_planes: bool,
 }
 
 impl Default for Plot3DConfig {
@@ -186,6 +285,8 @@ impl Default for Plot3DConfig {
             grid_lines: 40,
             show_axes: true,
             show_labels: true,
+            surface_alpha: 0.85,
+            show_coord_planes: false,
         }
     }
 }
@@ -240,6 +341,44 @@ impl Graph3D {
             v_var: "v".to_string(),
             u_range,
             v_range,
+        });
+    }
+
+    /// Cycle the render mode
+    pub fn cycle_render_mode(&mut self) {
+        self.config.render_mode = self.config.render_mode.next();
+    }
+
+    /// Add a spherical surface r = f(theta, phi)
+    pub fn add_spherical(&mut self, expr: Expr) {
+        self.surfaces.push(Surface3D::Spherical {
+            expr,
+            theta_var: "theta".to_string(),
+            phi_var: "phi".to_string(),
+            theta_range: (0.0, std::f64::consts::TAU),
+            phi_range: (0.0, std::f64::consts::PI),
+        });
+    }
+
+    /// Add a cylindrical surface r = f(theta, z)
+    pub fn add_cylindrical(&mut self, expr: Expr) {
+        self.surfaces.push(Surface3D::Cylindrical {
+            expr,
+            theta_var: "theta".to_string(),
+            z_var: "z".to_string(),
+            theta_range: (0.0, std::f64::consts::TAU),
+            z_range: (-5.0, 5.0),
+        });
+    }
+
+    /// Add a level surface f(x,y,z) = c
+    pub fn add_level_surface(&mut self, expr: Expr, level: f64) {
+        self.surfaces.push(Surface3D::LevelSurface {
+            expr,
+            x_var: "x".to_string(),
+            y_var: "y".to_string(),
+            z_var: "z".to_string(),
+            level,
         });
     }
 
@@ -327,6 +466,11 @@ impl Graph3D {
             self.draw_axes(ctx, width, height);
         }
 
+        // Draw coordinate plane grids
+        if self.config.show_coord_planes {
+            self.draw_coord_planes(ctx, width, height);
+        }
+
         // Draw surfaces
         for surface in &self.surfaces {
             self.draw_surface(ctx, surface, width, height);
@@ -398,6 +542,37 @@ impl Graph3D {
                     ctx, x_expr, y_expr, z_expr, u_var, v_var, *u_range, *v_range, width, height,
                 );
             }
+            Surface3D::Spherical {
+                expr,
+                theta_var,
+                phi_var,
+                theta_range,
+                phi_range,
+            } => {
+                self.draw_spherical_surface(
+                    ctx, expr, theta_var, phi_var, *theta_range, *phi_range, width, height,
+                );
+            }
+            Surface3D::Cylindrical {
+                expr,
+                theta_var,
+                z_var,
+                theta_range,
+                z_range,
+            } => {
+                self.draw_cylindrical_surface(
+                    ctx, expr, theta_var, z_var, *theta_range, *z_range, width, height,
+                );
+            }
+            Surface3D::LevelSurface {
+                expr,
+                x_var,
+                y_var,
+                z_var,
+                level,
+            } => {
+                self.draw_level_surface(ctx, expr, x_var, y_var, z_var, *level, width, height);
+            }
         }
     }
 
@@ -457,77 +632,8 @@ impl Graph3D {
             z_max = z_min + 1.0;
         }
 
-        // Collect quads for depth sorting
-        let mut quads: Vec<Quad> = Vec::new();
-
-        for i in 0..n {
-            for j in 0..n {
-                if let (Some(p00), Some(p10), Some(p11), Some(p01)) = (
-                    points[i][j],
-                    points[i + 1][j],
-                    points[i + 1][j + 1],
-                    points[i][j + 1],
-                ) {
-                    let avg_z = (p00.2 + p10.2 + p11.2 + p01.2) / 4.0;
-                    let t = (avg_z - z_min) / (z_max - z_min);
-                    let color = self.config.colormap.color(t);
-
-                    // Calculate depth for sorting (distance from camera)
-                    let cam_pos = self.camera.position();
-                    let cx = (p00.0 + p10.0 + p11.0 + p01.0) / 4.0;
-                    let cy = (p00.1 + p10.1 + p11.1 + p01.1) / 4.0;
-                    let cz = (p00.2 + p10.2 + p11.2 + p01.2) / 4.0;
-                    let depth = (cx - cam_pos.0).powi(2)
-                        + (cy - cam_pos.1).powi(2)
-                        + (cz - cam_pos.2).powi(2);
-
-                    quads.push(Quad {
-                        corners: [p00, p10, p11, p01],
-                        color,
-                        depth,
-                    });
-                }
-            }
-        }
-
-        // Sort by depth (painter's algorithm - far to near)
-        quads.sort_by(|a, b| {
-            b.depth
-                .partial_cmp(&a.depth)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Draw quads
-        for quad in &quads {
-            let corners: Vec<(f64, f64)> = quad
-                .corners
-                .iter()
-                .map(|p| self.project(p.0, p.1, p.2, width, height))
-                .collect();
-
-            if self.config.render_mode != RenderMode::Wireframe {
-                // Fill
-                set_color(ctx, quad.color);
-                ctx.move_to(corners[0].0, corners[0].1);
-                for c in &corners[1..] {
-                    ctx.line_to(c.0, c.1);
-                }
-                ctx.close_path();
-                let _ = ctx.fill();
-            }
-
-            if self.config.render_mode != RenderMode::Filled {
-                // Wireframe
-                set_color(ctx, self.config.wireframe_color);
-                ctx.set_line_width(0.5);
-                ctx.move_to(corners[0].0, corners[0].1);
-                for c in &corners[1..] {
-                    ctx.line_to(c.0, c.1);
-                }
-                ctx.close_path();
-                let _ = ctx.stroke();
-            }
-        }
+        let quads = self.build_quads(&points, n, z_min, z_max);
+        self.draw_quads(ctx, &quads, width, height);
     }
 
     fn draw_parametric_surface(
@@ -593,9 +699,281 @@ impl Graph3D {
             z_max = z_min + 1.0;
         }
 
-        // Collect and sort quads
-        let mut quads: Vec<Quad> = Vec::new();
+        let quads = self.build_quads(&points, n, z_min, z_max);
+        self.draw_quads(ctx, &quads, width, height);
+    }
 
+    fn draw_spherical_surface(
+        &self,
+        ctx: &Context,
+        expr: &Expr,
+        theta_var: &str,
+        phi_var: &str,
+        theta_range: (f64, f64),
+        phi_range: (f64, f64),
+        width: u32,
+        height: u32,
+    ) {
+        let mut evaluator = Evaluator::new();
+        let n = self.config.grid_lines;
+
+        let dtheta = (theta_range.1 - theta_range.0) / n as f64;
+        let dphi = (phi_range.1 - phi_range.0) / n as f64;
+
+        let mut points: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(n + 1);
+        let mut z_min = f64::INFINITY;
+        let mut z_max = f64::NEG_INFINITY;
+
+        for i in 0..=n {
+            let mut row = Vec::with_capacity(n + 1);
+            let theta = theta_range.0 + i as f64 * dtheta;
+
+            for j in 0..=n {
+                let phi = phi_range.0 + j as f64 * dphi;
+
+                evaluator.set_var(theta_var, Expr::Float(theta));
+                evaluator.set_var(phi_var, Expr::Float(phi));
+
+                if let Ok(result) = evaluator.eval(expr) {
+                    if let Ok(r) = expr_to_f64(&result) {
+                        if r.is_finite() {
+                            let x = r * phi.sin() * theta.cos();
+                            let y = r * phi.sin() * theta.sin();
+                            let z = r * phi.cos();
+                            z_min = z_min.min(z);
+                            z_max = z_max.max(z);
+                            row.push(Some((x, y, z)));
+                        } else {
+                            row.push(None);
+                        }
+                    } else {
+                        row.push(None);
+                    }
+                } else {
+                    row.push(None);
+                }
+            }
+            points.push(row);
+        }
+
+        if (z_max - z_min).abs() < 1e-10 {
+            z_max = z_min + 1.0;
+        }
+
+        let quads = self.build_quads(&points, n, z_min, z_max);
+        self.draw_quads(ctx, &quads, width, height);
+    }
+
+    fn draw_cylindrical_surface(
+        &self,
+        ctx: &Context,
+        expr: &Expr,
+        theta_var: &str,
+        z_var: &str,
+        theta_range: (f64, f64),
+        z_range: (f64, f64),
+        width: u32,
+        height: u32,
+    ) {
+        let mut evaluator = Evaluator::new();
+        let n = self.config.grid_lines;
+
+        let dtheta = (theta_range.1 - theta_range.0) / n as f64;
+        let dz = (z_range.1 - z_range.0) / n as f64;
+
+        let mut points: Vec<Vec<Option<(f64, f64, f64)>>> = Vec::with_capacity(n + 1);
+        let mut z_min_val = f64::INFINITY;
+        let mut z_max_val = f64::NEG_INFINITY;
+
+        for i in 0..=n {
+            let mut row = Vec::with_capacity(n + 1);
+            let theta = theta_range.0 + i as f64 * dtheta;
+
+            for j in 0..=n {
+                let z = z_range.0 + j as f64 * dz;
+
+                evaluator.set_var(theta_var, Expr::Float(theta));
+                evaluator.set_var(z_var, Expr::Float(z));
+
+                if let Ok(result) = evaluator.eval(expr) {
+                    if let Ok(r) = expr_to_f64(&result) {
+                        if r.is_finite() {
+                            let x = r * theta.cos();
+                            let y = r * theta.sin();
+                            z_min_val = z_min_val.min(z);
+                            z_max_val = z_max_val.max(z);
+                            row.push(Some((x, y, z)));
+                        } else {
+                            row.push(None);
+                        }
+                    } else {
+                        row.push(None);
+                    }
+                } else {
+                    row.push(None);
+                }
+            }
+            points.push(row);
+        }
+
+        if (z_max_val - z_min_val).abs() < 1e-10 {
+            z_max_val = z_min_val + 1.0;
+        }
+
+        let quads = self.build_quads(&points, n, z_min_val, z_max_val);
+        self.draw_quads(ctx, &quads, width, height);
+    }
+
+    fn draw_level_surface(
+        &self,
+        ctx: &Context,
+        expr: &Expr,
+        x_var: &str,
+        y_var: &str,
+        z_var: &str,
+        level: f64,
+        width: u32,
+        height: u32,
+    ) {
+        let mut evaluator = Evaluator::new();
+        let num_slices: usize = 30;
+        let grid_size: usize = 60;
+
+        let z_step = (self.viewport.z_max - self.viewport.z_min) / num_slices as f64;
+        let dx = (self.viewport.x_max - self.viewport.x_min) / grid_size as f64;
+        let dy = (self.viewport.y_max - self.viewport.y_min) / grid_size as f64;
+
+        ctx.set_line_width(1.5);
+
+        for slice in 0..num_slices {
+            let z = self.viewport.z_min + (slice as f64 + 0.5) * z_step;
+            let t = (z - self.viewport.z_min) / (self.viewport.z_max - self.viewport.z_min);
+            let color = self.config.colormap.color(t.clamp(0.0, 1.0));
+            ctx.set_source_rgba(
+                color.r as f64 / 255.0,
+                color.g as f64 / 255.0,
+                color.b as f64 / 255.0,
+                self.config.surface_alpha,
+            );
+
+            evaluator.set_var(z_var, Expr::Float(z));
+
+            // Evaluate f(x,y,z) - c on a 2D grid at this z
+            let mut values = vec![vec![0.0f64; grid_size + 1]; grid_size + 1];
+            for i in 0..=grid_size {
+                let x = self.viewport.x_min + i as f64 * dx;
+                evaluator.set_var(x_var, Expr::Float(x));
+                for j in 0..=grid_size {
+                    let y = self.viewport.y_min + j as f64 * dy;
+                    evaluator.set_var(y_var, Expr::Float(y));
+                    if let Ok(result) = evaluator.eval(expr) {
+                        if let Ok(v) = expr_to_f64(&result) {
+                            values[i][j] = if v.is_finite() { v - level } else { f64::NAN };
+                        } else {
+                            values[i][j] = f64::NAN;
+                        }
+                    } else {
+                        values[i][j] = f64::NAN;
+                    }
+                }
+            }
+
+            // Marching squares on this z-plane
+            for i in 0..grid_size {
+                for j in 0..grid_size {
+                    let x0 = self.viewport.x_min + i as f64 * dx;
+                    let y0 = self.viewport.y_min + j as f64 * dy;
+                    let x1 = x0 + dx;
+                    let y1 = y0 + dy;
+
+                    let v00 = values[i][j];
+                    let v10 = values[i + 1][j];
+                    let v01 = values[i][j + 1];
+                    let v11 = values[i + 1][j + 1];
+
+                    if v00.is_nan() || v10.is_nan() || v01.is_nan() || v11.is_nan() {
+                        continue;
+                    }
+
+                    let s00 = v00 >= 0.0;
+                    let s10 = v10 >= 0.0;
+                    let s01 = v01 >= 0.0;
+                    let s11 = v11 >= 0.0;
+
+                    let case = (s00 as u8) | ((s10 as u8) << 1) | ((s01 as u8) << 2) | ((s11 as u8) << 3);
+
+                    let interp = |va: f64, vb: f64| -> f64 {
+                        if (va - vb).abs() < 1e-15 { 0.5 } else { va / (va - vb) }
+                    };
+
+                    let e_bottom = || { let t = interp(v00, v10); (x0 + t * dx, y0) };
+                    let e_top = || { let t = interp(v01, v11); (x0 + t * dx, y1) };
+                    let e_left = || { let t = interp(v00, v01); (x0, y0 + t * dy) };
+                    let e_right = || { let t = interp(v10, v11); (x1, y0 + t * dy) };
+
+                    let draw_line = |p1: (f64, f64), p2: (f64, f64)| {
+                        let (sx1, sy1) = self.project(p1.0, p1.1, z, width, height);
+                        let (sx2, sy2) = self.project(p2.0, p2.1, z, width, height);
+                        ctx.move_to(sx1, sy1);
+                        ctx.line_to(sx2, sy2);
+                    };
+
+                    match case {
+                        0 | 15 => {}
+                        1 | 14 => draw_line(e_bottom(), e_left()),
+                        2 | 13 => draw_line(e_bottom(), e_right()),
+                        3 | 12 => draw_line(e_left(), e_right()),
+                        4 | 11 => draw_line(e_left(), e_top()),
+                        5 | 10 => {
+                            draw_line(e_bottom(), e_left());
+                            draw_line(e_top(), e_right());
+                        }
+                        6 | 9 => draw_line(e_bottom(), e_top()),
+                        7 | 8 => draw_line(e_top(), e_right()),
+                        _ => {}
+                    }
+                }
+            }
+            let _ = ctx.stroke();
+        }
+    }
+
+    fn draw_coord_planes(&self, ctx: &Context, width: u32, height: u32) {
+        ctx.set_line_width(0.5);
+        ctx.set_source_rgba(0.5, 0.5, 0.6, 0.2);
+
+        let step = 1.0;
+        let range = 5.0;
+
+        // XY plane (z=0)
+        let mut x = -range;
+        while x <= range {
+            let (sx0, sy0) = self.project(x, -range, 0.0, width, height);
+            let (sx1, sy1) = self.project(x, range, 0.0, width, height);
+            ctx.move_to(sx0, sy0);
+            ctx.line_to(sx1, sy1);
+            x += step;
+        }
+        let mut y = -range;
+        while y <= range {
+            let (sx0, sy0) = self.project(-range, y, 0.0, width, height);
+            let (sx1, sy1) = self.project(range, y, 0.0, width, height);
+            ctx.move_to(sx0, sy0);
+            ctx.line_to(sx1, sy1);
+            y += step;
+        }
+        let _ = ctx.stroke();
+    }
+
+    /// Build quads from a grid of sampled points (shared by explicit, parametric, spherical, cylindrical)
+    fn build_quads(
+        &self,
+        points: &[Vec<Option<(f64, f64, f64)>>],
+        n: usize,
+        z_min: f64,
+        z_max: f64,
+    ) -> Vec<Quad> {
+        let mut quads = Vec::new();
         for i in 0..n {
             for j in 0..n {
                 if let (Some(p00), Some(p10), Some(p11), Some(p01)) = (
@@ -624,14 +1002,16 @@ impl Graph3D {
                 }
             }
         }
-
         quads.sort_by(|a, b| {
-            b.depth
-                .partial_cmp(&a.depth)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal)
         });
+        quads
+    }
 
-        for quad in &quads {
+    /// Draw sorted quads with the current render mode and alpha
+    fn draw_quads(&self, ctx: &Context, quads: &[Quad], width: u32, height: u32) {
+        let alpha = self.config.surface_alpha;
+        for quad in quads {
             let corners: Vec<(f64, f64)> = quad
                 .corners
                 .iter()
@@ -639,7 +1019,12 @@ impl Graph3D {
                 .collect();
 
             if self.config.render_mode != RenderMode::Wireframe {
-                set_color(ctx, quad.color);
+                ctx.set_source_rgba(
+                    quad.color.r as f64 / 255.0,
+                    quad.color.g as f64 / 255.0,
+                    quad.color.b as f64 / 255.0,
+                    alpha,
+                );
                 ctx.move_to(corners[0].0, corners[0].1);
                 for c in &corners[1..] {
                     ctx.line_to(c.0, c.1);
