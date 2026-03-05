@@ -121,7 +121,7 @@ impl App {
 
         // Position
         let (x, y) = if popup {
-            let monitor = gartk_x11::monitor_at_pointer(&conn)?;
+            let monitor = gartk_x11::monitor_of_active_window(&conn)?;
             let x = monitor.rect.x + (monitor.rect.width as i32 - width as i32) / 2;
             let y = monitor.rect.y + (monitor.rect.height as i32 - height as i32) / 3;
             (x, y)
